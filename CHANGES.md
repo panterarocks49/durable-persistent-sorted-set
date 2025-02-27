@@ -1,0 +1,49 @@
+# 0.3.0
+
+- JVM: Per-set branching factor
+- JVM: Choose type of reference for stored nodes (strong, soft, weak) per set
+- JVM: Defaults to 512 branching factor, soft ref-type
+- Added `settings` and `sorted-set*`
+- JVM: Added `storage` and `opts` args to ctors
+- JVM: Short-circuit `walkAddresses`
+
+# 0.2.3
+
+- Support set > 1M in CLJS (< 16^6 = 16M for fast path, up to 32^10 = 10^15 theoretically)
+
+# 0.2.2
+
+- Made Seq class public #11 via @FiV0
+
+# 0.2.1
+
+Added:
+
+- `seek` to jump ahead during iteration #9 via @FiV0
+
+# 0.2.0
+
+Added:
+
+- Durability in Clojure version #7 with @whilo
+- `IStorage`, `store`, `restore`, `restore-by`, `walk-addresses`, `set-branching-factor!`
+
+# 0.1.4
+
+Special handling of nils in slice/rslice in CLJS, matching CLJ behaviour #6
+
+# 0.1.3
+
+Fixed NPE in `me.tonsky.persistent-sorted-set.arrays/array?` #4 #5 thx @timothypratley
+
+# 0.1.2
+
+Throw if iterating over a transient set that has been mutated.
+
+# 0.1.1
+
+Recompiled for Java 8.
+
+# 0.1.0
+
+Initial.

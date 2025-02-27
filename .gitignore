@@ -1,0 +1,9 @@
+.nrepl-port
+.lein-*
+target
+.DS_Store
+.idea
+pom.xml
+bench-clojure/*.edn
+node_modules
+.shadow-cljs
