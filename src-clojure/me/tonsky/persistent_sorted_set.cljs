@@ -76,6 +76,9 @@
   (store [this node]
     "Store a node and return its address"))
 
+(defprotocol IStore
+  (-store [this] [this storage]))
+
 (defn- path-get ^number [^number path ^number level]
   (if (< level max-safe-level)
     (-> path
@@ -298,6 +301,10 @@
       (return-array left (arrays/aget nodes 0) (arrays/aget nodes 1)))))
 
 (deftype Node [keys pointers]
+  IStore
+  (-store [this storage]
+    (prn "store isn't done yet"))
+
   INode
   (node-lim-key [_]
     (arrays/alast keys))
@@ -332,10 +339,10 @@
             ;; gotta split it up
             (let [middle  (arrays/half (arrays/alength new-pointers))]
               (arrays/array
-                (Node. (.slice new-keys     0 middle)
-                       (.slice new-pointers 0 middle))
-                (Node. (.slice new-keys     middle)
-                       (.slice new-pointers middle)))))))))
+               (Node. (.slice new-keys     0 middle)
+                      (.slice new-pointers 0 middle))
+               (Node. (.slice new-keys     middle)
+                      (.slice new-pointers middle)))))))))
 
   (node-disj [_ cmp key root? left right]
     (let [idx (lookup-range cmp keys key)]
@@ -354,11 +361,15 @@
               (rotate (Node. new-keys new-pointers) root? left right))))))))
 
 (deftype Leaf [keys]
+  IStore
+  (-store [this storage]
+    (prn "store isn't done yet"))
+
   INode
   (node-lim-key [_]
     (arrays/alast keys))
-;;   Object
-;;   (toString [_] (pr-str* (vec keys)))
+  ;;   Object
+  ;;   (toString [_] (pr-str* (vec keys)))
   
   (node-len [_]
     (arrays/alength keys))
@@ -383,24 +394,24 @@
         ;; element already here
         (and (< idx keys-l)
              (== 0 (cmp key (arrays/aget keys idx))))
-          nil
-      
+        nil
+        
         ;; splitting
         (== keys-l max-len)
-          (let [middle (arrays/half (inc keys-l))]
-            (if (> idx middle)
-              ;; new key goes to the second half
-              (arrays/array
-                (Leaf. (.slice keys 0 middle))
-                (Leaf. (cut-n-splice keys middle keys-l idx idx (arrays/array key))))
-              ;; new key goes to the first half
-              (arrays/array
-                (Leaf. (cut-n-splice keys 0 middle idx idx (arrays/array key)))
-                (Leaf. (.slice keys middle keys-l)))))
-       
+        (let [middle (arrays/half (inc keys-l))]
+          (if (> idx middle)
+            ;; new key goes to the second half
+            (arrays/array
+             (Leaf. (.slice keys 0 middle))
+             (Leaf. (cut-n-splice keys middle keys-l idx idx (arrays/array key))))
+            ;; new key goes to the first half
+            (arrays/array
+             (Leaf. (cut-n-splice keys 0 middle idx idx (arrays/array key)))
+             (Leaf. (.slice keys middle keys-l)))))
+        
         ;; ok as is
         :else
-          (arrays/array (Leaf. (splice keys idx idx (arrays/array key)))))))
+        (arrays/array (Leaf. (splice keys idx idx (arrays/array key)))))))
   
   (node-disj [_ cmp key root? left right]
     (let [idx (lookup-exact cmp keys key)]
@@ -413,22 +424,33 @@
 (declare conj disj btset-iter)
 
 (def ^:private ^:const uninitialized-hash nil)
+(def ^:private ^:const uninitialized-address nil)
 
-(deftype BTSet [storage root shift cnt comparator meta ^:mutable _hash]
+;; placeholder for now for weak/strong refs
+(defn make-reference [node]
+  node)
+
+(defn read-reference [node]
+  node)
+
+(defprotocol IRoot
+  (-root [_]))
+
+(deftype BTSet [^:mutable _storage ^:mutable _root shift cnt comparator meta ^:mutable _hash ^:mutable _address]
   Object
   (toString [this] (pr-str* this))
 
   ICloneable
-  (-clone [_] (BTSet. storage root shift cnt comparator meta _hash))
+  (-clone [_] (BTSet. _storage _root shift cnt comparator meta _hash _address))
 
   IWithMeta
-  (-with-meta [_ new-meta] (BTSet. storage root shift cnt comparator new-meta _hash))
+  (-with-meta [_ new-meta] (BTSet. _storage _root shift cnt comparator new-meta _hash _address))
 
   IMeta
   (-meta [_] meta)
 
   IEmptyableCollection
-  (-empty [_] (BTSet. storage (Leaf. (arrays/array)) 0 0 comparator meta uninitialized-hash))
+  (-empty [_] (BTSet. _storage (Leaf. (arrays/array)) 0 0 comparator meta uninitialized-hash uninitialized-address))
 
   IEquiv
   (-equiv [this other]
@@ -446,11 +468,30 @@
   ISet
   (-disjoin [this key] (disj this key comparator))
 
-  ILookup 
-  (-lookup [_ k]
-    (node-lookup root comparator k))
-  (-lookup [_ k not-found]
-    (or (node-lookup root comparator k) not-found))
+  IRoot
+  (-root [_]
+    (or (read-reference _root)
+        (when _address
+          (let [node (restore _storage _address)]
+            (set! _root (make-reference node))
+            node))))
+
+  IStore
+  (-store [this]
+    (assert (some? _storage) "Can't store without a storage")
+    (when (nil? _address)
+      (let [root (-root this)]
+        (set! _address (store root _storage))))
+    _address)
+  (-store [this storage]
+    (set! _storage storage)
+    (-store this))
+
+  ILookup
+  (-lookup [this k]
+    (node-lookup (-root this) comparator k))
+  (-lookup [this k not-found]
+    (or (node-lookup (-root this) comparator k) not-found))
 
   ISeqable
   (-seq [this] (btset-iter this))
@@ -464,7 +505,7 @@
     (if-let [i (btset-iter this)]
       (-reduce i f start)
       start))
-  
+
   IReversible
   (-rseq [this]
     (rseq (btset-iter this)))
@@ -498,7 +539,7 @@
   
 (defn- keys-for [set path]
   (loop [level (.-shift set)
-         node  (.-root set)]
+         node  (-root set)]
     (if (pos? level)
       (recur
         (dec level)
@@ -506,7 +547,7 @@
       (.-keys node))))
 
 (defn- alter-btset [set root shift cnt]
-  (BTSet. (.-storage set) root shift cnt (.-comparator set) (.-meta set) uninitialized-hash))
+  (BTSet. (.-storage set) root shift cnt (.-comparator set) (.-meta set) uninitialized-hash uninitialized-address))
 
 
 ;; iteration
@@ -554,8 +595,8 @@
   (if (neg? path)
     empty-path
     (or
-      (-next-path (.-root set) path (.-shift set))
-      (path-inc (-rpath (.-root set) empty-path (.-shift set))))))
+      (-next-path (-root set) path (.-shift set))
+      (path-inc (-rpath (-root set) empty-path (.-shift set))))))
 
 (defn- -prev-path [node ^number path ^number level]
   (let [idx (path-get path level)]
@@ -593,9 +634,9 @@
    Will overflow at leaf if at beginning of tree"
   [set ^number path]
   (if (> (path-get path (inc (.-shift set))) 0) ;; overflow
-    (-rpath (.-root set) path (.-shift set))
+    (-rpath (-root set) path (.-shift set))
     (or
-      (-prev-path (.-root set) path (.-shift set))
+      (-prev-path (-root set) path (.-shift set))
       (path-dec empty-path))))
 
 (declare iter riter)
@@ -603,9 +644,9 @@
 (defn- btset-iter
   "Iterator that represents the whole set"
   [set]
-  (when (pos? (node-len (.-root set)))
+  (when (pos? (node-len (-root set)))
     (let [left  empty-path
-          rpath (-rpath (.-root set) empty-path (.-shift set))
+          rpath (-rpath (-root set) empty-path (.-shift set))
           right (next-path set rpath)]
       (iter set left right))))
 
@@ -866,7 +907,7 @@
     1
     
     :else
-    (-distance (.-root set) path-l path-r (.-shift set))))
+    (-distance (-root set) path-l path-r (.-shift set))))
 
 (defn est-count [iter]
   (distance (.-set iter) (.-left iter) (.-right iter)))
@@ -880,7 +921,7 @@
   [set key comparator]
   (if (nil? key)
     empty-path
-    (loop [node  (.-root set)
+    (loop [node  (-root set)
            path  empty-path
            level (.-shift set)]
       (let [keys-l (node-len node)]
@@ -903,8 +944,8 @@
    It’s a virtual path that is bigger than any path in a tree"
   [set key comparator]
   (if (nil? key)
-    (path-inc (-rpath (.-root set) empty-path (.-shift set)))
-    (loop [node  (.-root set)
+    (path-inc (-rpath (-root set) empty-path (.-shift set)))
+    (loop [node  (-root set)
            path  empty-path
            level (.-shift set)]
       (let [keys-l (node-len node)]
@@ -997,31 +1038,31 @@
 (defn conj
   "Analogue to [[clojure.core/conj]] with comparator that overrides the one stored in set."
   [set key cmp]
-  (let [roots (node-conj (.-root set) cmp key)]
+  (let [roots (node-conj (-root set) cmp key)]
     (cond
       ;; tree not changed
       (nil? roots)
-        set
-     
+      set
+
       ;; keeping single root
       (== (arrays/alength roots) 1)
-        (alter-btset set
-          (arrays/aget roots 0)
-          (.-shift set)
-          (inc (.-cnt set)))
-     
+      (alter-btset set
+                   (arrays/aget roots 0)
+                   (.-shift set)
+                   (inc (.-cnt set)))
+
       ;; introducing new root
       :else
-        (alter-btset set
-          (Node. (arrays/amap node-lim-key roots) roots)
-          (inc (.-shift set))
-          (inc (.-cnt set))))))
+      (alter-btset set
+                   (Node. (arrays/amap node-lim-key roots) roots)
+                   (inc (.-shift set))
+                   (inc (.-cnt set))))))
 
 
 (defn disj
   "Analogue to [[clojure.core/disj]] with comparator that overrides the one stored in set."
   [set key cmp]
-  (let [new-roots (node-disj (.-root set) cmp key true nil nil)]
+  (let [new-roots (node-disj (-root set) cmp key true nil nil)]
     (if (nil? new-roots) ;; nothing changed, key wasn't in the set
       set
       (let [new-root (arrays/aget new-roots 0)]
@@ -1087,8 +1128,8 @@
      (loop [current-level leaves
             shift         0]
        (case (count current-level)
-         0 (BTSet. storage (Leaf. (arrays/array)) 0 0 cmp nil uninitialized-hash)
-         1 (BTSet. storage (first current-level) shift (arrays/alength arr) cmp nil uninitialized-hash)
+         0 (BTSet. storage (Leaf. (arrays/array)) 0 0 cmp nil uninitialized-hash uninitialized-address)
+         1 (BTSet. storage (first current-level) shift (arrays/alength arr) cmp nil uninitialized-hash uninitialized-address)
          (recur
           (->> current-level
                (arr-partition-approx min-len max-len)
@@ -1109,11 +1150,11 @@
 (defn sorted-set*
   "Create a set with custom comparator, metadata and settings"
   [opts]
-  (BTSet. (:storage opts) (Leaf. (arrays/array)) 0 0 (or (:cmp opts) compare) (:meta opts) uninitialized-hash))
+  (BTSet. (:storage opts) (Leaf. (arrays/array)) 0 0 (or (:cmp opts) compare) (:meta opts) uninitialized-hash uninitialized-address))
 
 
 (defn sorted-set-by
-  ([cmp] (BTSet. nil (Leaf. (arrays/array)) 0 0 cmp nil uninitialized-hash))
+  ([cmp] (BTSet. nil (Leaf. (arrays/array)) 0 0 cmp nil uninitialized-hash uninitialized-address))
   ([cmp & keys] (from-sequential cmp keys)))
 
 
