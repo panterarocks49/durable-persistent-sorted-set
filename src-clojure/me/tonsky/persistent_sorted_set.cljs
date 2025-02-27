@@ -1,12 +1,12 @@
 (ns ^{:doc
-  "A B-tree based persistent sorted set. Supports transients, custom comparators, fast iteration, efficient slices (iterator over a part of the set) and reverse slices. Almost a drop-in replacement for [[clojure.core/sorted-set]], the only difference being this one can’t store nil."
-  :author "Nikita Prokopov"}
-  me.tonsky.persistent-sorted-set
+      "A B-tree based persistent sorted set. Supports transients, custom comparators, fast iteration, efficient slices (iterator over a part of the set) and reverse slices. Almost a drop-in replacement for [[clojure.core/sorted-set]], the only difference being this one can’t store nil."
+      :author "Nikita Prokopov"}
+    me.tonsky.persistent-sorted-set
   (:refer-clojure :exclude [iter conj disj sorted-set sorted-set-by])
   (:require
-    [me.tonsky.persistent-sorted-set.arrays :as arrays])
+   [me.tonsky.persistent-sorted-set.arrays :as arrays])
   (:require-macros
-    [me.tonsky.persistent-sorted-set.arrays :as arrays]))
+   [me.tonsky.persistent-sorted-set.arrays :as arrays]))
 
 ; B+ tree
 ; -------
@@ -18,7 +18,8 @@
 ;                         node.keys[i] == max(node.pointers[i].keys)
 ; All arrays are 16..32 elements, inclusive
 
-; BTSet:    root       :: Node or Leaf
+; BTSet:    storage    :: IStorage protocol
+;           root       :: Node or Leaf
 ;           shift      :: depth - 1
 ;           cnt        :: size of a set, integer, rolling
 ;           comparator :: comparator used for ordering
@@ -66,15 +67,24 @@
 
 (def ^:const empty-path 0)
 
+(defprotocol IStorage
+  ;; returns an INode node/leaf
+  (restore [this address]
+    "Restore a node from a given address")
+  (accessed [this address]
+    "Optional: notify that address was accessed (useful for caching)")
+  (store [this node]
+    "Store a node and return its address"))
+
 (defn- path-get ^number [^number path ^number level]
   (if (< level max-safe-level)
     (-> path
-      (unsigned-bit-shift-right (* level bits-per-level))
-      (bit-and bit-mask))
+        (unsigned-bit-shift-right (* level bits-per-level))
+        (bit-and bit-mask))
     (-> path
-      (/ (arrays/aget factors level))
-      (js/Math.floor)
-      (bit-and bit-mask))))
+        (/ (arrays/aget factors level))
+        (js/Math.floor)
+        (bit-and bit-mask))))
 
 (defn- path-set ^number [^number path ^number level ^number idx]
   (let [smol? (and (< path max-safe-path) (< level max-safe-level))
@@ -404,28 +414,28 @@
 
 (def ^:private ^:const uninitialized-hash nil)
 
-(deftype BTSet [root shift cnt comparator meta ^:mutable _hash]
+(deftype BTSet [storage root shift cnt comparator meta ^:mutable _hash]
   Object
   (toString [this] (pr-str* this))
 
   ICloneable
-  (-clone [_] (BTSet. root shift cnt comparator meta _hash))
+  (-clone [_] (BTSet. storage root shift cnt comparator meta _hash))
 
   IWithMeta
-  (-with-meta [_ new-meta] (BTSet. root shift cnt comparator new-meta _hash))
+  (-with-meta [_ new-meta] (BTSet. storage root shift cnt comparator new-meta _hash))
 
   IMeta
   (-meta [_] meta)
 
   IEmptyableCollection
-  (-empty [_] (BTSet. (Leaf. (arrays/array)) 0 0 comparator meta uninitialized-hash))
+  (-empty [_] (BTSet. storage (Leaf. (arrays/array)) 0 0 comparator meta uninitialized-hash))
 
   IEquiv
   (-equiv [this other]
     (and
-      (set? other)
-      (== cnt (count other))
-      (every? #(contains? this %) other)))
+     (set? other)
+     (== cnt (count other))
+     (every? #(contains? this %) other)))
 
   IHash
   (-hash [this] (caching-hash this hash-unordered-coll _hash))
@@ -454,16 +464,16 @@
     (if-let [i (btset-iter this)]
       (-reduce i f start)
       start))
-           
+  
   IReversible
   (-rseq [this]
     (rseq (btset-iter this)))
 
-  ; ISorted
-  ; (-sorted-seq [this ascending?])
-  ; (-sorted-seq-from [this k ascending?])
-  ; (-entry-key [this entry] entry)
-  ; (-comparator [this] comparator)
+; ISorted
+; (-sorted-seq [this ascending?])
+; (-sorted-seq-from [this k ascending?])
+; (-entry-key [this entry] entry)
+; (-comparator [this] comparator)
 
   ICounted
   (-count [_] cnt)
@@ -496,7 +506,7 @@
       (.-keys node))))
 
 (defn- alter-btset [set root shift cnt]
-  (BTSet. root shift cnt (.-comparator set) (.-meta set) uninitialized-hash))
+  (BTSet. (.-storage set) root shift cnt (.-comparator set) (.-meta set) uninitialized-hash))
 
 
 ;; iteration
@@ -1069,43 +1079,86 @@
    (from-sorted-array cmp arr (arrays/alength arr) {}))
   ([cmp arr _len]
    (from-sorted-array cmp arr _len {}))
-  ([cmp arr _len _opts]
-   (let [leaves (->> arr
-                    (arr-partition-approx min-len max-len)
-                    (arr-map-inplace #(Leaf. %)))]
+  ([cmp arr _len opts]
+   (let [leaves  (->> arr
+                      (arr-partition-approx min-len max-len)
+                      (arr-map-inplace #(Leaf. %)))
+         storage (:storage opts)]
      (loop [current-level leaves
-            shift 0]
+            shift         0]
        (case (count current-level)
-         0 (BTSet. (Leaf. (arrays/array)) 0 0 cmp nil uninitialized-hash)
-         1 (BTSet. (first current-level) shift (arrays/alength arr) cmp nil uninitialized-hash)
+         0 (BTSet. storage (Leaf. (arrays/array)) 0 0 cmp nil uninitialized-hash)
+         1 (BTSet. storage (first current-level) shift (arrays/alength arr) cmp nil uninitialized-hash)
          (recur
-           (->> current-level
-             (arr-partition-approx min-len max-len)
-             (arr-map-inplace #(Node. (arrays/amap node-lim-key %) %)))
-           (inc shift)))))))
+          (->> current-level
+               (arr-partition-approx min-len max-len)
+               (arr-map-inplace #(Node. (arrays/amap node-lim-key %) %)))
+          (inc shift)))))))
 
 
 (defn from-sequential
   "Create a set with custom comparator and a collection of keys. Useful when you don’t want to call [[clojure.core/apply]] on [[sorted-set-by]]."
-  [cmp seq]
-  (let [arr (-> (into-array seq) (arrays/asort cmp) (sorted-arr-distinct cmp))]
-    (from-sorted-array cmp arr)))
+  ([cmp seq]
+   (from-sequential cmp seq {}))
+  ([cmp seq opts]
+   (let [arr (-> (into-array seq) (arrays/asort cmp) (sorted-arr-distinct cmp))
+         len (arrays/alength arr)]
+     (from-sorted-array cmp arr len opts))))
 
 
 (defn sorted-set*
   "Create a set with custom comparator, metadata and settings"
   [opts]
-  (BTSet. (Leaf. (arrays/array)) 0 0 (or (:cmp opts) compare) (:meta opts) uninitialized-hash))
+  (BTSet. (:storage opts) (Leaf. (arrays/array)) 0 0 (or (:cmp opts) compare) (:meta opts) uninitialized-hash))
 
 
 (defn sorted-set-by
-  ([cmp] (BTSet. (Leaf. (arrays/array)) 0 0 cmp nil uninitialized-hash))
+  ([cmp] (BTSet. nil (Leaf. (arrays/array)) 0 0 cmp nil uninitialized-hash))
   ([cmp & keys] (from-sequential cmp keys)))
 
 
 (defn sorted-set
   ([] (sorted-set-by compare))
   ([& keys] (from-sequential compare keys)))
+
+
+;; TODO: store fns
+;; (defn restore-by
+;;   "Constructs lazily-loaded set from storage, root address and custom comparator.
+;;    Supports all operations that normal in-memory impl would,
+;;    will fetch missing nodes by calling IStorage::restore when needed"
+;;   ([cmp address ^IStorage storage]
+;;    (restore-by cmp address storage {}))
+;;   ([cmp address ^IStorage storage opts]
+;;    (PersistentSortedSet. nil cmp address storage nil -1 (map->settings opts) 0)))
+
+
+;; (defn restore
+;;   "Constructs lazily-loaded set from storage and root address.
+;;    Supports all operations that normal in-memory impl would,
+;;    will fetch missing nodes by calling IStorage::restore when needed"
+;;   ([address storage]
+;;    (restore-by RT/DEFAULT_COMPARATOR address storage {}))
+;;   ([address ^IStorage storage opts]
+;;    (restore-by RT/DEFAULT_COMPARATOR address storage opts)))
+
+
+;; (defn walk-addresses
+;;   "Visit each address used by this set. Usable for cleaning up
+;;    garbage left in storage from previous versions of the set"
+;;   [^PersistentSortedSet set consume-fn]
+;;   (.walkAddresses set consume-fn))
+
+
+;; (defn store
+;;   "Store each not-yet-stored node by calling IStorage::store and remembering
+;;    returned address. Incremental, won’t store same node twice on subsequent calls.
+;;    Returns root address. Remember it and use it for restore"
+;;   ([^PersistentSortedSet set]
+;;    (.store set))
+;;   ([^PersistentSortedSet set ^IStorage storage]
+;;    (.store set storage)))
+
 
 (defn settings [set]
   {:branching-factor max-len
