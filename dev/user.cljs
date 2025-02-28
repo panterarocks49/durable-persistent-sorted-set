@@ -1,9 +1,11 @@
 (ns user
-  (:require [me.tonsky.persistent-sorted-set :as pss]))
+  (:require
+   [me.tonsky.persistent-sorted-set.storage :refer [IStorage]]
+   [me.tonsky.persistent-sorted-set :as pss]))
 
 ;; In-memory storage implementation
 (deftype MemoryStorage [storage]
-  pss/IStorage
+  IStorage
   (restore [_ address]
     (get @storage address))
 
@@ -11,7 +13,9 @@
     nil) ; No-op for memory storage
 
   (store [_ node]
-    (let [address (random-uuid)]
+    (prn "STORE" node)
+    (prn (.-keys node))
+    (let [address (str (random-uuid))]
       (swap! storage assoc address node)
       address)))
 
@@ -29,9 +33,25 @@
 (comment
   (def storage (memory-storage))
 
-  (def s (pss/sorted-set 1 2 3))
+  ;; TODO: in this case we can see that we are restoring nodes which already were stored
+  ;; I think there is a case which recreates the same node and we overwrite the address
+  (def s (pss/from-sequential
+          #(compare %2 %1)
+          (range 0 256)
+          {:storage storage}))
 
-  (conj s 4)
+  (pss/store s)
+
+  (prn)
+
+  (let [x (reduce
+           (fn [s x]
+             (let [s  (disj s x)]
+               ;; (prn (.-keys (pss/-root s)))
+               s))
+           s
+           (range 190 220))]
+    (pss/store x))
 
   (doseq [x s]
     (prn x))

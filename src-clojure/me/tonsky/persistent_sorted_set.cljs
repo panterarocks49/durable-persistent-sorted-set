@@ -4,6 +4,7 @@
     me.tonsky.persistent-sorted-set
   (:refer-clojure :exclude [iter conj disj sorted-set sorted-set-by])
   (:require
+   [me.tonsky.persistent-sorted-set.storage :as storage]
    [me.tonsky.persistent-sorted-set.arrays :as arrays])
   (:require-macros
    [me.tonsky.persistent-sorted-set.arrays :as arrays]))
@@ -67,17 +68,9 @@
 
 (def ^:const empty-path 0)
 
-(defprotocol IStorage
-  ;; returns an INode node/leaf
-  (restore [this address]
-    "Restore a node from a given address")
-  (accessed [this address]
-    "Optional: notify that address was accessed (useful for caching)")
-  (store [this node]
-    "Store a node and return its address"))
-
-(defprotocol IStore
-  (-store [this] [this storage]))
+(defprotocol INodeStore
+  (-store [this] [this storage])
+  (-walk-addresses [this storage on-address]))
 
 (defn- path-get ^number [^number path ^number level]
   (if (< level max-safe-level)
@@ -216,19 +209,19 @@
 (defn- ^boolean eq-arr [cmp a1 a1-from a1-to a2 a2-from a2-to]
   (let [len (- a1-to a1-from)]
     (and
-      (== len (- a2-to a2-from))
-      (loop [i 0]
-        (cond
-          (== i len)
-          true
+     (== len (- a2-to a2-from))
+     (loop [i 0]
+       (cond
+         (== i len)
+         true
 
-          (not (== 0 (cmp
-                       (arrays/aget a1 (+ i a1-from))
-                       (arrays/aget a2 (+ i a2-from)))))
-          false
-          
-          :else
-          (recur (inc i)))))))
+         (not (== 0 (cmp
+                     (arrays/aget a1 (+ i a1-from))
+                     (arrays/aget a2 (+ i a2-from)))))
+         false
+
+         :else
+         (recur (inc i)))))))
 
 (defn- check-n-splice [cmp arr from to new-arr]
   (if (eq-arr cmp arr from to new-arr 0 (arrays/alength new-arr))
@@ -267,6 +260,7 @@
   (node-len           [_])
   (node-merge         [_ next])
   (node-merge-n-split [_ next])
+  (node-child         [_ idx storage])
   (node-lookup        [_ cmp key])
   (node-conj          [_ cmp key])
   (node-disj          [_ cmp key root? left right]))
@@ -300,49 +294,107 @@
     (let [nodes (node-merge-n-split node right)]
       (return-array left (arrays/aget nodes 0) (arrays/aget nodes 1)))))
 
-(deftype Node [keys pointers]
-  IStore
+(defn- ensure-addresses!
+  [^Node node size]
+  (when (nil? (.-_addresses node))
+    (let [addresses (arrays/make-array size)]
+      (set! (.-_addresses node) addresses)
+      addresses)))
+
+(defn- set-address!
+  [^Node node idx address]
+  (let [_addresses (.-_addresses node)]
+    (when (or (not (nil? _addresses))
+              (not (nil? address)))
+      (ensure-addresses! node (arrays/alength (.-pointers node)))
+      (arrays/aset _addresses idx address)
+      ;; TODO: make-reference
+      ;; wait so is this how it doesn't forget if it isn't stored?
+      ;; that is a good idea, was wondering about that
+      ;; if (address != null && _children[idx] instanceof ANode) {
+      ;;  _children[idx] = _settings.makeReference(_children[idx]);
+      ;;  }
+      )
+    address))
+
+(deftype Node [keys pointers ^:mutable _addresses]
+  INodeStore
   (-store [this storage]
-    (prn "store isn't done yet"))
+    (let [len (arrays/alength pointers)]
+      (ensure-addresses! this len)
+      (loop [idx 0]
+        (when (< idx len)
+          (let [address (arrays/aget _addresses idx)]
+            (when (nil? address)
+              (assert (not (nil? pointers)))
+              (let [child-node (arrays/aget pointers idx)]
+                (assert (not (nil? child-node)))
+                ;; assert _children[i] instanceof ANode;
+                (let [address (-store child-node storage)]
+                  (set-address! this idx address)))))
+          (recur (inc idx))))
+      (storage/store storage this)))
+
+  (-walk-addresses [this storage on-address]
+    (prn "walk-addresses isn't done in node yet"))
 
   INode
   (node-lim-key [_]
     (arrays/alast keys))
-  
+
   (node-len [_]
     (arrays/alength keys))
-  
-  (node-merge [_ next]
+
+  ;; TODO: test node merges
+  ;; most likely correct but can't figure out when they actually get called
+  (node-merge [this ^Node next]
+    (prn "node merge")
+    (ensure-addresses! this (arrays/alength pointers))
+    (ensure-addresses! next (arrays/alength (.-pointers next)))
     (Node. (arrays/aconcat keys (.-keys next))
-           (arrays/aconcat pointers (.-pointers next))))
-  
-  (node-merge-n-split [_ next]
+           (arrays/aconcat pointers (.-pointers next))
+           (arrays/aconcat _addresses (.-addresses next))))
+
+  (node-merge-n-split [this ^Node next]
+    (prn "node merge n split")
+    (ensure-addresses! this (arrays/alength pointers))
+    (ensure-addresses! next (arrays/alength (.-pointers next)))
     (let [ks (merge-n-split keys     (.-keys next))
-          ps (merge-n-split pointers (.-pointers next))]
-      (return-array (Node. (arrays/aget ks 0) (arrays/aget ps 0))
-                    (Node. (arrays/aget ks 1) (arrays/aget ps 1)))))
+          ps (merge-n-split pointers (.-pointers next))
+          as (merge-n-split _addresses (.-addresses next))]
+      (return-array (Node. (arrays/aget ks 0)
+                           (arrays/aget ps 0)
+                           (arrays/aget as 0))
+                    (Node. (arrays/aget ks 1)
+                           (arrays/aget ps 1)
+                           (arrays/aget as 1)))))
+
+  (node-child [_this idx ^IStorage storage])
 
   (node-lookup [_ cmp key]
     (let [idx (lookup-range cmp keys key)]
       (when-not (== -1 idx)
         (node-lookup (arrays/aget pointers idx) cmp key))))
-  
+
   (node-conj [_ cmp key]
     (let [idx   (binary-search-l cmp keys (- (arrays/alength keys) 2) key)
           nodes (node-conj (arrays/aget pointers idx) cmp key)]
       (when nodes
-        (let [new-keys     (check-n-splice cmp keys     idx (inc idx) (arrays/amap node-lim-key nodes))
-              new-pointers (splice             pointers idx (inc idx) nodes)]
+        (let [new-keys      (check-n-splice cmp keys     idx (inc idx) (arrays/amap node-lim-key nodes))
+              new-pointers  (splice             pointers idx (inc idx) nodes)
+              new-addresses (splice           _addresses idx (inc idx) (arrays/make-array (arrays/alength nodes)))]
           (if (<= (arrays/alength new-pointers) max-len)
             ;; ok as is
-            (arrays/array (Node. new-keys new-pointers))
+            (arrays/array (Node. new-keys new-pointers new-addresses))
             ;; gotta split it up
-            (let [middle  (arrays/half (arrays/alength new-pointers))]
+            (let [middle (arrays/half (arrays/alength new-pointers))]
               (arrays/array
-               (Node. (.slice new-keys     0 middle)
-                      (.slice new-pointers 0 middle))
-               (Node. (.slice new-keys     middle)
-                      (.slice new-pointers middle)))))))))
+               (Node. (.slice new-keys      0 middle)
+                      (.slice new-pointers  0 middle)
+                      (.slice new-addresses 0 middle))
+               (Node. (.slice new-keys      middle)
+                      (.slice new-pointers  middle)
+                      (.slice new-addresses middle)))))))))
 
   (node-disj [_ cmp key root? left right]
     (let [idx (lookup-range cmp keys key)]
@@ -354,34 +406,38 @@
                             (arrays/aget pointers (inc idx)))
               disjned     (node-disj child cmp key false left-child right-child)]
           (when disjned     ;; short-circuit, key not here
-            (let [left-idx     (if left-child  (dec idx) idx)
-                  right-idx    (if right-child (+ 2 idx) (+ 1 idx))
-                  new-keys     (check-n-splice cmp keys     left-idx right-idx (arrays/amap node-lim-key disjned))
-                  new-pointers (splice             pointers left-idx right-idx disjned)]
-              (rotate (Node. new-keys new-pointers) root? left right))))))))
+            (let [left-idx      (if left-child  (dec idx) idx)
+                  right-idx     (if right-child (+ 2 idx) (+ 1 idx))
+                  new-keys      (check-n-splice cmp keys     left-idx right-idx (arrays/amap node-lim-key disjned))
+                  new-pointers  (splice             pointers left-idx right-idx disjned)
+                  new-addresses (splice           _addresses left-idx right-idx (arrays/make-array (arrays/alength disjned)))]
+              (rotate (Node. new-keys new-pointers new-addresses) root? left right))))))))
 
 (deftype Leaf [keys]
-  IStore
+  INodeStore
   (-store [this storage]
-    (prn "store isn't done yet"))
+    (storage/store storage this))
+
+  ;; noop on leaf
+  (-walk-addresses [_ _ _])
 
   INode
   (node-lim-key [_]
     (arrays/alast keys))
   ;;   Object
   ;;   (toString [_] (pr-str* (vec keys)))
-  
+
   (node-len [_]
     (arrays/alength keys))
-  
+
   (node-merge [_ next]
     (Leaf. (arrays/aconcat keys (.-keys next))))
-  
+
   (node-merge-n-split [_ next]
     (let [ks (merge-n-split keys (.-keys next))]
       (return-array (Leaf. (arrays/aget ks 0))
                     (Leaf. (arrays/aget ks 1)))))
-  
+
   (node-lookup [_ cmp key]
     (let [idx (lookup-exact cmp keys key)]
       (when-not (== -1 idx)
@@ -395,7 +451,6 @@
         (and (< idx keys-l)
              (== 0 (cmp key (arrays/aget keys idx))))
         nil
-        
         ;; splitting
         (== keys-l max-len)
         (let [middle (arrays/half (inc keys-l))]
@@ -408,11 +463,10 @@
             (arrays/array
              (Leaf. (cut-n-splice keys 0 middle idx idx (arrays/array key)))
              (Leaf. (.slice keys middle keys-l)))))
-        
         ;; ok as is
         :else
         (arrays/array (Leaf. (splice keys idx idx (arrays/array key)))))))
-  
+
   (node-disj [_ cmp key root? left right]
     (let [idx (lookup-exact cmp keys key)]
       (when-not (== -1 idx) ;; key is here
@@ -472,16 +526,16 @@
   (-root [_]
     (or (read-reference _root)
         (when _address
-          (let [node (restore _storage _address)]
+          (let [node (storage/restore _storage _address)]
             (set! _root (make-reference node))
             node))))
 
-  IStore
+  INodeStore
   (-store [this]
     (assert (some? _storage) "Can't store without a storage")
     (when (nil? _address)
       (let [root (-root this)]
-        (set! _address (store root _storage))))
+        (set! _address (-store root _storage))))
     _address)
   (-store [this storage]
     (set! _storage storage)
@@ -536,18 +590,18 @@
   IPrintWithWriter
   (-pr-writer [this writer opts]
     (pr-sequential-writer writer pr-writer "#{" " " "}" opts (seq this))))
-  
+
 (defn- keys-for [set path]
   (loop [level (.-shift set)
          node  (-root set)]
     (if (pos? level)
       (recur
-        (dec level)
-        (arrays/aget (.-pointers node) (path-get path level)))
+       (dec level)
+       (arrays/aget (.-pointers node) (path-get path level)))
       (.-keys node))))
 
 (defn- alter-btset [set root shift cnt]
-  (BTSet. (.-storage set) root shift cnt (.-comparator set) (.-meta set) uninitialized-hash uninitialized-address))
+  (BTSet. (.-_storage set) root shift cnt (.-comparator set) (.-meta set) uninitialized-hash uninitialized-address))
 
 
 ;; iteration
@@ -658,7 +712,7 @@
   IIndexed
   (-nth [this i]
     (aget arr (+ off i)))
-  
+
   (-nth [this i not-found]
     (if (and (>= i 0) (< i (- end off)))
       (aget arr (+ off i))
@@ -675,7 +729,7 @@
     (if (== off end)
       (f)
       (-reduce (-drop-first this) f (aget arr off))))
-  
+
   (-reduce [this f start]
     (loop [val start, n off]
       (if (< n end)
@@ -745,7 +799,7 @@
           left' (next-path set last)]
       (when (path-lt left' right)
         (-copy this left' right))))
-           
+
   IReduce
   (-reduce [this f]
     (if (nil? keys)
@@ -787,15 +841,15 @@
   ISeek
   (-seek [this key]
     (-seek this key (.-comparator set)))
-  
+
   (-seek [this key cmp]
     (cond
       (nil? key)
       (throw (js/Error. "seek can't be called with a nil key!"))
-      
+
       (nat-int? (cmp (arrays/aget keys idx) key))
       this
-      
+
       :else
       (when-some [left' (-seek* set key cmp)]
         (Iter. set left' right (keys-for set left') (path-get left' 0)))))
@@ -1054,7 +1108,7 @@
       ;; introducing new root
       :else
       (alter-btset set
-                   (Node. (arrays/amap node-lim-key roots) roots)
+                   (Node. (arrays/amap node-lim-key roots) roots nil)
                    (inc (.-shift set))
                    (inc (.-cnt set))))))
 
@@ -1133,7 +1187,7 @@
          (recur
           (->> current-level
                (arr-partition-approx min-len max-len)
-               (arr-map-inplace #(Node. (arrays/amap node-lim-key %) %)))
+               (arr-map-inplace #(Node. (arrays/amap node-lim-key %) % nil)))
           (inc shift)))))))
 
 
@@ -1190,15 +1244,14 @@
 ;;   [^PersistentSortedSet set consume-fn]
 ;;   (.walkAddresses set consume-fn))
 
-
-;; (defn store
-;;   "Store each not-yet-stored node by calling IStorage::store and remembering
-;;    returned address. Incremental, won’t store same node twice on subsequent calls.
-;;    Returns root address. Remember it and use it for restore"
-;;   ([^PersistentSortedSet set]
-;;    (.store set))
-;;   ([^PersistentSortedSet set ^IStorage storage]
-;;    (.store set storage)))
+(defn store
+  "Store each not-yet-stored node by calling IStorage::store and remembering
+   returned address. Incremental, won’t store same node twice on subsequent calls.
+   Returns root address. Remember it and use it for restore"
+  ([^BTSet set]
+   (-store set))
+  ([^BTSet set ^IStorage storage]
+   (-store set storage)))
 
 
 (defn settings [set]
