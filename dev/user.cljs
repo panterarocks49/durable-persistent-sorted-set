@@ -40,6 +40,10 @@
           (range 0 256)
           {:storage storage}))
 
+  (pss/walk-addresses s (fn [address]
+                          (prn address)
+                          nil))
+
   (pss/store s)
 
   (prn)

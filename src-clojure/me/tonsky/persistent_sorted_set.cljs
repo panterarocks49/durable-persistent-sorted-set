@@ -69,8 +69,9 @@
 (def ^:const empty-path 0)
 
 (defprotocol INodeStore
+  ;; kind of dumb but not every type implements all var args
   (-store [this] [this storage])
-  (-walk-addresses [this storage on-address]))
+  (-walk-addresses [this on-address] [this storage on-address]))
 
 (defn- path-get ^number [^number path ^number level]
   (if (< level max-safe-level)
@@ -336,7 +337,17 @@
       (storage/store storage this)))
 
   (-walk-addresses [this storage on-address]
-    (prn "walk-addresses isn't done in node yet"))
+    (let [len (arrays/alength pointers)]
+      (ensure-addresses! this len)
+      (loop [idx 0]
+        (when (< idx len)
+          (let [address    (arrays/aget _addresses idx)
+                child-node (arrays/aget pointers idx)]
+            (if address
+              (when (on-address address)
+                (-walk-addresses child-node storage on-address))
+              (-walk-addresses child-node storage on-address)))
+          (recur (inc idx))))))
 
   INode
   (node-lim-key [_]
@@ -540,6 +551,12 @@
   (-store [this storage]
     (set! _storage storage)
     (-store this))
+
+  (-walk-addresses [this on-address]
+    (if _address
+      (when (on-address _address)
+        (-walk-addresses (-root this) _storage on-address))
+      (-walk-addresses (-root this) _storage on-address)))
 
   ILookup
   (-lookup [this k]
@@ -1238,11 +1255,11 @@
 ;;    (restore-by RT/DEFAULT_COMPARATOR address storage opts)))
 
 
-;; (defn walk-addresses
-;;   "Visit each address used by this set. Usable for cleaning up
-;;    garbage left in storage from previous versions of the set"
-;;   [^PersistentSortedSet set consume-fn]
-;;   (.walkAddresses set consume-fn))
+(defn walk-addresses
+  "Visit each address used by this set. Usable for cleaning up
+   garbage left in storage from previous versions of the set"
+  [^BTSet set consume-fn]
+  (-walk-addresses set consume-fn))
 
 (defn store
   "Store each not-yet-stored node by calling IStorage::store and remembering
