@@ -44,6 +44,30 @@
 
 ;; Run this in the REPL
 (comment
+  (def s (pss/from-sequential
+          cmp
+          (range 0 776)
+          {:storage storage}))
+
+  (.-keys (pss/-root s))
+
+  (def s2 (reduce
+           (fn [acc _]
+             (conj acc (+ 2000 (rand-int 1000))))
+           s
+           (range 0 10)))
+
+  (.-keys (pss/-root s2))
+
+  (disj s 36)
+
+  (pss/store s)
+
+  (pss/store (disj s 36))
+
+  (prn)
+
+
   ;; TODO: in this case we can see that we are restoring nodes which already were stored
   ;; I think there is a case which recreates the same node and we overwrite the address
   (def s (pss/from-sequential

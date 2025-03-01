@@ -410,9 +410,10 @@
           child (node-child this idx storage)
           nodes (node-conj child cmp key storage)]
       (when nodes
-        (let [new-keys      (check-n-splice cmp keys     idx (inc idx) (arrays/amap node-lim-key nodes))
-              new-pointers  (splice             pointers idx (inc idx) nodes)
-              new-addresses (splice           _addresses idx (inc idx) (arrays/make-array (arrays/alength nodes)))]
+        (let [new-keys      (check-n-splice cmp keys       idx (inc idx) (arrays/amap node-lim-key nodes))
+              new-pointers  (splice             pointers   idx (inc idx) nodes)
+              ;; in conj, we init nil addresses because the nodes returned are always new
+              new-addresses (splice             _addresses idx (inc idx) (arrays/make-array (arrays/alength nodes)))]
           (if (<= (arrays/alength new-pointers) max-len)
             ;; ok as is
             (arrays/array (Node. new-keys new-pointers new-addresses))
@@ -439,9 +440,17 @@
           (when disjned     ;; short-circuit, key not here
             (let [left-idx      (if left-child  (dec idx) idx)
                   right-idx     (if right-child (+ 2 idx) (+ 1 idx))
-                  new-keys      (check-n-splice cmp keys     left-idx right-idx (arrays/amap node-lim-key disjned))
-                  new-pointers  (splice             pointers left-idx right-idx disjned)
-                  new-addresses (splice           _addresses left-idx right-idx (arrays/make-array (arrays/alength disjned)))]
+                  find-address  (fn [node]
+                                  (cond
+                                    (identical? left-child node)
+                                    (arrays/aget _addresses (dec idx))
+                                    (identical? child node)
+                                    (arrays/aget _addresses idx)
+                                    (identical? right-child node)
+                                    (arrays/aget _addresses (inc idx))))
+                  new-keys      (check-n-splice cmp keys       left-idx right-idx (arrays/amap node-lim-key disjned))
+                  new-pointers  (splice             pointers   left-idx right-idx disjned)
+                  new-addresses (splice             _addresses left-idx right-idx (arrays/amap find-address disjned))]
               (rotate (Node. new-keys new-pointers new-addresses) root? left right))))))))
 
 (deftype Leaf [keys]
@@ -1152,7 +1161,8 @@
       (alter-btset set
                    (Node. (arrays/amap node-lim-key roots)
                           roots
-                          nil)
+                          ;; in conj, we init nil addresses because the nodes returned are always new
+                          (arrays/make-array (arrays/alength roots)))
                    (inc (.-shift set))
                    (inc (.-cnt set))))))
 
@@ -1231,7 +1241,7 @@
          (recur
           (->> current-level
                (arr-partition-approx min-len max-len)
-               (arr-map-inplace #(Node. (arrays/amap node-lim-key %) % nil)))
+               (arr-map-inplace #(Node. (arrays/amap node-lim-key %) % (arrays/make-array (arrays/alength %)))))
           (inc shift)))))))
 
 
