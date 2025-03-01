@@ -46,20 +46,26 @@
 (comment
   (def s (pss/from-sequential
           cmp
-          (range 0 776)
+          (range 0 10)
           {:storage storage}))
 
   (.-keys (pss/-root s))
 
   (def s2 (reduce
-           (fn [acc _]
-             (conj acc (+ 2000 (rand-int 1000))))
+           (fn [acc x]
+             (conj acc x))
            s
-           (range 0 10)))
+           (range 0 1000)))
 
   (.-keys (pss/-root s2))
 
   (disj s 36)
+
+  (reduce
+   (fn [acc x]
+     (disj acc x))
+   s
+   (range 0 1000))
 
   (pss/store s)
 

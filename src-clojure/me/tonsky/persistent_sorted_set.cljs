@@ -297,8 +297,10 @@
 
 (defn- ensure-addresses!
   [^Node node size]
-  ;; TODO: can we remove this and just init with the right array?
-  ;; seems wasteful to do it this way
+  ;; TODO: this check essentially does nothing because addresses right now is always initialized
+  ;; eventually if we use this as in memory as well as durable then we might want to set this up
+  ;; such that addresses is only initialized when we need it
+  ;; but it doesn't matter at the moment
   (when (nil? (.-_addresses node))
     (let [addresses (arrays/make-array size)]
       (set! (.-_addresses node) addresses)
