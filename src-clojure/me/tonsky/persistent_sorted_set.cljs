@@ -360,23 +360,19 @@
   (node-len [_]
     (arrays/alength keys))
 
-  ;; TODO: test node merges
-  ;; most likely correct but can't figure out when they actually get called
   (node-merge [this ^Node next]
-    (prn "node merge")
     (ensure-addresses! this (arrays/alength pointers))
     (ensure-addresses! next (arrays/alength (.-pointers next)))
     (Node. (arrays/aconcat keys (.-keys next))
            (arrays/aconcat pointers (.-pointers next))
-           (arrays/aconcat _addresses (.-addresses next))))
+           (arrays/aconcat _addresses (.-_addresses next))))
 
   (node-merge-n-split [this ^Node next]
-    (prn "node merge n split")
     (ensure-addresses! this (arrays/alength pointers))
     (ensure-addresses! next (arrays/alength (.-pointers next)))
     (let [ks (merge-n-split keys     (.-keys next))
           ps (merge-n-split pointers (.-pointers next))
-          as (merge-n-split _addresses (.-addresses next))]
+          as (merge-n-split _addresses (.-_addresses next))]
       (return-array (Node. (arrays/aget ks 0)
                            (arrays/aget ps 0)
                            (arrays/aget as 0))
