@@ -10,7 +10,7 @@
   (restore [_ address]
     (prn "RESTORE" address)
     (let [{:as data :keys [keys addresses]} (get @storage address)]
-      (prn data)
+      ;; (prn data)
       (if addresses
         (pss/Node. keys (arrays/make-array (arrays/alength addresses)) addresses)
         (pss/Leaf. keys))))
@@ -25,7 +25,7 @@
                     (assoc :addresses (.-_addresses node)))]
       (prn "STORE")
       (prn address)
-      (prn data)
+      ;; (prn data)
       (swap! storage assoc address data)
       address)))
 
@@ -39,25 +39,29 @@
   (println "Try running (test-persistent-set) to test the storage protocol")
   )
 
-(def cmp #(compare %2 %1))
+(def cmp compare #_(compare %2 %1))
 (def storage (memory-storage))
 
 ;; Run this in the REPL
 (comment
   (def s (pss/from-sequential
           cmp
-          (range 0 10)
+          (range 0 10000)
           {:storage storage}))
-
-  (.-keys (pss/-root s))
 
   (def s2 (reduce
            (fn [acc x]
              (conj acc x))
            s
-           (range 0 1000)))
+           (range 0 100000)))
 
-  (.-keys (pss/-root s2))
+  (def s3 (pss/from-sequential
+           cmp
+           (range 0 7000000)
+           {:storage storage}))
+
+  (doseq [x s3]
+    #_(prn x))
 
   (disj s 36)
 
@@ -67,21 +71,7 @@
    s
    (range 0 1000))
 
-  (pss/store s)
-
-  (pss/store (disj s 36))
-
-  (prn)
-
-
-  ;; TODO: in this case we can see that we are restoring nodes which already were stored
-  ;; I think there is a case which recreates the same node and we overwrite the address
-  (def s (pss/from-sequential
-          cmp
-          (range 0 256)
-          {:storage storage}))
-
-  (pss/store s)
+  (pss/store s3)
 
   (prn)
 
@@ -92,7 +82,7 @@
                    {:set-metadata (pss/set-metadata s)}))
 
   (doseq [x s-restored]
-    (prn x))
+    #_(prn x))
 
   (doseq [x s]
     (prn x))

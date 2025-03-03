@@ -44,9 +44,14 @@
   "js limitation for bit ops"
   (js/Math.pow 2 31))
 
+;; have to be careful in changing this only certain values make sense
+;; so we don't limit the overall size
 (def ^:const bits-per-level
   "tunable param"
-  5)
+  ;; 5
+  ;; 8 is pretty good tradeoff in performance
+  ;; but I think we want largest for storage
+  10)
 
 (def ^:const max-len
   (js/Math.pow 2 bits-per-level)) ;; 32
@@ -295,32 +300,26 @@
     (let [nodes (node-merge-n-split node right)]
       (return-array left (arrays/aget nodes 0) (arrays/aget nodes 1)))))
 
+(defn make-reference [node]
+  (prn "make ref" node)
+  (js/WeakRef. node))
+
+(defn read-reference [node]
+  (if (instance? js/WeakRef node)
+    (.deref node)
+    node))
+
 (defn- ensure-addresses!
   [^Node node size]
   ;; TODO: this check essentially does nothing because addresses right now is always initialized
   ;; eventually if we use this as in memory as well as durable then we might want to set this up
   ;; such that addresses is only initialized when we need it
   ;; but it doesn't matter at the moment
+  ;; in practice with 1024 branching factor this is very small overhead
   (when (nil? (.-_addresses node))
     (let [addresses (arrays/make-array size)]
       (set! (.-_addresses node) addresses)
       addresses)))
-
-(defn- set-address!
-  [^Node node idx address]
-  (let [_addresses (.-_addresses node)]
-    (when (or (not (nil? _addresses))
-              (not (nil? address)))
-      (ensure-addresses! node (arrays/alength (.-pointers node)))
-      (arrays/aset _addresses idx address)
-      ;; TODO: make-reference
-      ;; wait so is this how it doesn't forget if it isn't stored?
-      ;; that is a good idea, was wondering about that
-      ;; if (address != null && _children[idx] instanceof ANode) {
-      ;;  _children[idx] = _settings.makeReference(_children[idx]);
-      ;;  }
-      )
-    address))
 
 (deftype Node [keys pointers ^:mutable _addresses]
   INodeStore
@@ -331,12 +330,12 @@
         (when (< idx len)
           (let [address (arrays/aget _addresses idx)]
             (when (nil? address)
-              (assert (not (nil? pointers)))
-              (let [child-node (arrays/aget pointers idx)]
+              ;; in practice we shouldn't have to read reference but just in case
+              (let [child-node (read-reference (arrays/aget pointers idx))]
                 (assert (not (nil? child-node)))
-                ;; assert _children[i] instanceof ANode;
-                (let [address (-store child-node storage)]
-                  (set-address! this idx address)))))
+                (when-let [address (-store child-node storage)]
+                  (arrays/aset _addresses idx address)
+                  (arrays/aset pointers idx (make-reference child-node))))))
           (recur (inc idx))))
       (storage/store storage this)))
 
@@ -387,15 +386,16 @@
                  (< idx (arrays/alength pointers))))
     (assert (or (and pointers (arrays/aget pointers idx))
                 (and _addresses (arrays/aget _addresses idx))))
-    ;; TODO: read-reference
-    (let [child   (arrays/aget pointers idx)
+    (let [child   (read-reference (arrays/aget pointers idx))
           address (when _addresses (arrays/aget _addresses idx))]
-      (if-not child
+      (if child
+        (do (when (and storage address)
+              (storage/accessed storage address))
+            child)
         (let [child (storage/restore storage address)]
-          (arrays/aset pointers idx child))
-        (when (and storage address)
-          (storage/accessed storage address)))
-      (arrays/aget pointers idx)))
+          (when-not child (throw (ex-info "node-child not found" {:address address})))
+          (arrays/aset pointers idx (make-reference child))
+          child))))
 
   (node-lookup [this cmp key storage]
     (let [idx (lookup-range cmp keys key)]
@@ -521,13 +521,6 @@
 (def ^:private ^:const uninitialized-hash nil)
 (def ^:private ^:const uninitialized-address nil)
 
-;; placeholder for now for weak/strong refs
-(defn make-reference [node]
-  node)
-
-(defn read-reference [node]
-  node)
-
 (defprotocol IRoot
   (-root [_]))
 
@@ -564,11 +557,14 @@
   (-disjoin [this key] (disj this key comparator))
 
   IRoot
+  ;; we don't bother doing weak refs on the root
+  ;; I figure you should always want to keep this in memory at least
   (-root [_]
-    (or (read-reference _root)
+    (or _root
         (when _address
           (let [node (storage/restore _storage _address)]
-            (set! _root (make-reference node))
+            (when-not node (throw (ex-info "Root not found" {:address _address})))
+            (set! _root node)
             node))))
 
   INodeStore
