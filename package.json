@@ -1,5 +1,6 @@
 {
   "devDependencies": {
+    "idb": "^8.0.2",
     "shadow-cljs": "^2.20.12",
     "source-map-support": "^0.5.21"
   }

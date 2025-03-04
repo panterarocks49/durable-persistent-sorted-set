@@ -1,20 +1,33 @@
 {:source-paths ["src-clojure" "test-clojure" "bench-clojure" "dev"]
- :dependencies [[cider/cider-nrepl "0.27.4"]]
+
+ :dev-http {8020 "public"}
+
+ :dependencies [[cider/cider-nrepl "0.27.4"]
+                [funcool/promesa "11.0.678"]]
  :builds
  {:bench
   {:target           :node-script
    :main             me.tonsky.persistent-sorted-set.bench/-main
    :output-to        "target/bench.js"
    :compiler-options {:infer-externs true}}
-  
+
   :test
   {:target           :node-test
    :output-to        "target/test.js"
    :ns-regexp        "me\\.tonsky\\.persistent-sorted-set\\.test\\..*$"
    :compiler-options {:infer-externs true}}
-  
+
+  :web
+  {:target           :browser
+   :output-dir       "public/js"
+   :asset-path       "/js"
+   :modules
+   {:main ; becomes public/js/main.js
+    {:init-fn web/init}}
+   :compiler-options {:infer-externs true}}
+
   :repl
-  {:target :node-script
-   :output-to "target/repl.js"
-   :main user/main
+  {:target           :node-script
+   :output-to        "target/repl.js"
+   :main             user/main
    :compiler-options {:infer-externs true}}}}
