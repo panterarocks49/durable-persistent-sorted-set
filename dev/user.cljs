@@ -81,6 +81,10 @@
                    storage
                    {:set-metadata (pss/set-metadata s)}))
 
+  (take 10 s)
+
+  (take 10 s-restored)
+
   (doseq [x s-restored]
     #_(prn x))
 

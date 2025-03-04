@@ -1,10 +1,10 @@
 (ns me.tonsky.persistent-sorted-set.bench
   (:require
-    #?(:clj [clj-async-profiler.core :as profiler])
-    #?(:clj [criterium.core :as criterium])
-    [me.tonsky.persistent-sorted-set :as set]
-    [me.tonsky.persistent-sorted-set.bench.core :as bench.core]
-    #?(:clj [me.tonsky.persistent-sorted-set.test.storage :as storage])))
+   #?(:clj [clj-async-profiler.core :as profiler])
+   #?(:clj [criterium.core :as criterium])
+   [me.tonsky.persistent-sorted-set :as set]
+   [me.tonsky.persistent-sorted-set.bench.core :as bench.core]
+   [me.tonsky.persistent-sorted-set.test.storage :as storage]))
 
 (def ints-10K
   (vec (shuffle (range 10000))))
@@ -24,13 +24,14 @@
 (def set-300K
   (into (set/sorted-set) ints-300K))
 
-#?(:clj
-    (def storage-300K
-      (storage/storage)))
+(def storage-300K
+  (storage/storage))
 
-#?(:clj
-    (def address-300K
-      (set/store (into (set/sorted-set) ints-300K) storage-300K)))
+(def address-300K-set
+  (into (set/sorted-set) ints-300K))
+
+(def address-300K
+  (set/store address-300K-set storage-300K))
 
 (defn conj-10K []
   (reduce conj (set/sorted-set) ints-10K))
@@ -66,34 +67,31 @@
 (defn reduce-300K []
   (reduce + 0 set-300K))
 
-#?(:clj
-    (defn into-50K []
-      (into (set/sorted-set) ints-50K)))
+(defn into-50K []
+  (into (set/sorted-set) ints-50K))
 
-#?(:clj
-    (defn store-50K []
-      (set/store
-        (into (set/sorted-set) ints-50K)
-        (storage/storage))))
+(defn store-50K []
+  (set/store
+   (into (set/sorted-set) ints-50K)
+   (storage/storage)))
 
-#?(:clj
-    (defn reduce-300K-lazy []
-      (reset! (:*memory storage-300K) {})
-      (reduce + 0 (set/restore address-300K storage-300K))))
+(defn reduce-300K-lazy []
+  (reset! (:*memory storage-300K) {})
+  (reduce + 0 (set/restore address-300K storage-300K #?(:cljs {:set-metadata (set/set-metadata address-300K-set)}))))
 
 (def benches
-  {"conj-10K"        conj-10K
-   "disj-10K"        disj-10K
-   "contains-10K"   contains-10K
-   "doseq-300K"      doseq-300K
-   "next-300K"       next-300K
-   "reduce-300K"     reduce-300K
-   #?@(:clj 
-        ["conj-transient-10K" conj-transient-10K
-         "disj-transient-10K" disj-transient-10K
-         "into-50K"           into-50K
-         "store-50K"          store-50K
-         "reduce-300K-lazy"   reduce-300K-lazy])})
+  {"conj-10K"         conj-10K
+   "disj-10K"         disj-10K
+   "contains-10K"     contains-10K
+   "doseq-300K"       doseq-300K
+   "next-300K"        next-300K
+   "reduce-300K"      reduce-300K
+   "into-50K"         into-50K
+   "store-50K"        store-50K
+   "reduce-300K-lazy" reduce-300K-lazy
+   #?@(:clj
+       ["conj-transient-10K" conj-transient-10K
+        "disj-transient-10K" disj-transient-10K])})
 
 (defn ^:export -main [& args]
   (let [names    (or (not-empty args) (sort (keys benches)))

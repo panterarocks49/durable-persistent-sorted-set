@@ -301,7 +301,6 @@
       (return-array left (arrays/aget nodes 0) (arrays/aget nodes 1)))))
 
 (defn make-reference [node]
-  (prn "make ref" node)
   (js/WeakRef. node))
 
 (defn read-reference [node]

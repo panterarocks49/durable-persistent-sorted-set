@@ -1,8 +1,8 @@
 (ns me.tonsky.persistent-sorted-set.test.stress
   (:require
-    [me.tonsky.persistent-sorted-set :as set]
-    #?(:clj [me.tonsky.persistent-sorted-set.test.storage :as storage])
-    [clojure.test :as t :refer [is are deftest testing]]))
+   [me.tonsky.persistent-sorted-set :as set]
+   [me.tonsky.persistent-sorted-set.test.storage :as storage]
+   [clojure.test :as t :refer [is are deftest testing]]))
 
 (def iters 100)
 
@@ -23,16 +23,16 @@
           xs-rm     (reduce disj (into (sorted-set) xs) rm)]
       (doseq [[method set0] [["conj" (into (set/sorted-set) xs)]
                              ["bulk" (apply set/sorted-set xs)]
-                             #?(:clj ["lazy" (storage/roundtrip (into (set/sorted-set) xs))])]
+                             ["lazy" (storage/roundtrip (into (set/sorted-set) xs))]]
               :let [set1 (reduce disj set0 rm)
                     set2 (persistent! (reduce disj (transient set0) rm))
                     set3 (reduce disj set0 full-rm)
                     set4 (persistent! (reduce disj (transient set0) full-rm))]]
         (testing
-          (str "Iter:" (inc i)  "/" iters
-            "set:" method 
-            "adds:" (str (count xs) " (" (count xs-sorted) " distinct),")
-            "removals:" (str (count rm) " (down to " (count xs-rm) ")"))
+            (str "Iter:" (inc i)  "/" iters
+                 "set:" method
+                 "adds:" (str (count xs) " (" (count xs-sorted) " distinct),")
+                 "removals:" (str (count rm) " (down to " (count xs-rm) ")"))
           (testing "conj, seq"
             (is (= (vec set0) xs-sorted)))
           (testing "eq"
@@ -61,17 +61,17 @@
           [from to] (sort [(- 10000 (rand-int 20000)) (+ 10000 (rand-int 20000))])
           expected  (filter #(<= from % to) xs-sorted)]
       (doseq [[method set] [["conj" (into (set/sorted-set) xs)]
-                            #?(:clj ["lazy" (storage/roundtrip (into (set/sorted-set) xs))])]
+                            ["lazy" (storage/roundtrip (into (set/sorted-set) xs))]]
               :let [set-range (set/slice set from to)]]
         (testing
-          (str
-            "Iter: " (inc i) "/" iters
-            ", set:" method
-            ", from:" (count xs-sorted) " elements"
-            ", down to:" (count expected))
+            (str
+             "Iter: " (inc i) "/" iters
+             ", set:" method
+             ", from:" (count xs-sorted) " elements"
+             ", down to:" (count expected))
           (let [set (into (set/sorted-set) (shuffle xs-sorted))]
             (is (= (set/rslice set 30000 -10)
-                  (-> (set/rslice set 30000 -10) rseq reverse))))
+                   (-> (set/rslice set 30000 -10) rseq reverse))))
           (is (= (vec set-range) (vec (seq set-range)))) ;; checking IReduce on BTSetIter
           (is (= (vec set-range) expected))
           (is (= (into-via-doseq [] set-range) expected))
