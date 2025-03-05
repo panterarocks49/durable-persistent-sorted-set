@@ -874,8 +874,8 @@
 
   IPrintWithWriter
   #_:clj-kondo/ignore
-  (-pr-writer [_ writer opts]
-    (pr-sequential-writer writer pr-writer "(" " " ")" opts '("Iter") #_(seq this))))
+  (-pr-writer [this writer opts]
+    (pr-sequential-writer writer pr-writer "(" " " ")" opts (seq this))))
 
 (deftype ReverseIter [arr rev-leaves idx end-idx]
   IEquiv
@@ -927,8 +927,8 @@
 
   IPrintWithWriter
   #_:clj-kondo/ignore
-  (-pr-writer [_ writer opts]
-    (pr-sequential-writer writer pr-writer "(" " " ")" opts '("Iter") #_(seq this))))
+  (-pr-writer [this writer opts]
+    (pr-sequential-writer writer pr-writer "(" " " ")" opts (seq this))))
 
 (deftype AsyncIter [^BTSet set left right keys idx]
   IAsyncIter
