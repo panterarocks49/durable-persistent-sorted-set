@@ -521,12 +521,16 @@
 
 ;; BTSet
 
+(declare get-leaves)
+
 (defn async-iter->vec
   [iter]
-  (p/let [ret (reduce
+  (p/let [t (.now js/performance)
+          ret (reduce
                -conj!
                (-as-transient (.-EMPTY PersistentVector))
                iter)]
+    (prn "time" (- (.now js/performance) t))
     (-persistent! ret)))
 
 (declare conj disj btset-async-iter)
@@ -706,11 +710,11 @@
            level level]
     (if (pos? level)
       ;; inner node
-      (p/let [last-idx   (dec (arrays/alength (.-pointers node)))
-              last-child (node-child node last-idx (.-_storage set))]
+      (p/let [end-idx   (dec (arrays/alength (.-pointers node)))
+              last-child (node-child node end-idx (.-_storage set))]
         (p/recur
          last-child
-         (path-set path level last-idx)
+         (path-set path level end-idx)
          (dec level)))
       ;; leaf
       (path-set path 0 (dec (arrays/alength (.-keys node)))))))
@@ -793,7 +797,138 @@
     [this key]
     [this key comparator]))
 
-(declare -seek* -rseek*)
+(declare -seek* -rseek* ReverseIter)
+
+(deftype Iter [arr leaves idx end-idx]
+  IEquiv
+  #_:clj-kondo/ignore
+  (-equiv [this other] (equiv-sequential this other))
+
+  ISequential
+  ISeqable
+  (-seq [this] (when arr this))
+
+  ISeq
+  (-first [_]
+    (when arr
+      (arrays/aget arr idx)))
+
+  (-rest [this]
+    (or (-next this) ()))
+
+  INext
+  (-next [_]
+    (when arr
+      (let [inc-idx (inc idx)]
+        (if leaves
+          (if (< inc-idx (arrays/alength arr))
+            (Iter. arr leaves inc-idx end-idx)
+            (Iter. (first leaves) (next leaves) 0 end-idx))
+          (when (< inc-idx end-idx)
+            (Iter. arr leaves inc-idx end-idx))))))
+
+  IReduce
+  (-reduce [this f]
+    (if (nil? arr)
+      (f)
+      (let [first (-first this)
+            next  (-next this)]
+        (if (some? next)
+          (-reduce next f first)
+          first))))
+
+  (-reduce [_ f start]
+    (loop [arr    arr
+           leaves leaves
+           idx    idx
+           acc    start]
+      (if arr
+        (let [new-acc (f acc (arrays/aget arr idx))
+              inc-idx (inc idx)]
+          (if (reduced? new-acc)
+            @new-acc
+            (if leaves
+              (if (< inc-idx (arrays/alength arr))
+                (recur arr leaves inc-idx new-acc)
+                (recur (first leaves) (next leaves) 0 new-acc))
+              (if (< inc-idx end-idx)
+                (recur arr leaves inc-idx new-acc)
+                new-acc))))
+        acc)))
+
+  IReversible
+  (-rseq [_]
+    (let [leaves     (into [arr] leaves)
+          rev-leaves (reverse leaves)]
+      (ReverseIter. (first rev-leaves) (next rev-leaves) (dec end-idx) (dec idx))))
+
+  ;; ISeek
+  ;; (-seek [this key]
+  ;;   (-seek this key (.-comparator set)))
+
+  ;; (-seek [this key cmp]
+  ;;   (throw (ex-info "seek not impl yet" {})))
+
+  Object
+  (toString [this] (pr-str* this))
+
+  IPrintWithWriter
+  #_:clj-kondo/ignore
+  (-pr-writer [_ writer opts]
+    (pr-sequential-writer writer pr-writer "(" " " ")" opts '("Iter") #_(seq this))))
+
+(deftype ReverseIter [arr rev-leaves idx end-idx]
+  IEquiv
+  #_:clj-kondo/ignore
+  (-equiv [this other] (equiv-sequential this other))
+
+  ISequential
+  ISeqable
+  (-seq [this] (when arr this))
+
+  ISeq
+  (-first [_]
+    (when arr
+      (arrays/aget arr idx)))
+
+  (-rest [this]
+    (or (-next this) ()))
+
+  INext
+  (-next [_]
+    ;; reverse so we walk backwards in the array
+    ;; but leaves are in reverse order already
+    (when arr
+      (if rev-leaves
+        (if (< 0 idx)
+          (ReverseIter. arr rev-leaves (dec idx) end-idx)
+          (let [next-arr (first rev-leaves)]
+            (ReverseIter. next-arr (next rev-leaves) (dec (arrays/alength next-arr)) end-idx)))
+        (when (< end-idx (dec idx))
+          (ReverseIter. arr rev-leaves (dec idx) end-idx)))))
+
+  ;; TODO: reduce protocol? would be faster
+
+  IReversible
+  (-rseq [_]
+    (let [rev-leaves (into [arr] rev-leaves)
+          leaves     (reverse rev-leaves)]
+      (Iter. (first leaves) (next leaves) (inc end-idx) (inc idx))))
+
+  ;; ISeek
+  ;; (-seek [this key]
+  ;;   (-seek this key (.-comparator set)))
+
+  ;; (-seek [this key cmp]
+  ;;   (throw (ex-info "seek not impl yet" {})))
+
+  Object
+  (toString [this] (pr-str* this))
+
+  IPrintWithWriter
+  #_:clj-kondo/ignore
+  (-pr-writer [_ writer opts]
+    (pr-sequential-writer writer pr-writer "(" " " ")" opts '("Iter") #_(seq this))))
 
 (deftype AsyncIter [set left right keys idx]
   IAsyncIter
@@ -1022,7 +1157,8 @@
     (pr-sequential-writer writer pr-writer "(" " " ")" opts '("AsyncReverseIter") #_(seq this))))
 
 (defn async-riter [set left right]
-  (AsyncReverseIter. set left right (keys-for set right) (path-get right 0)))
+  (p/let [ks (keys-for set right)]
+    (AsyncReverseIter. set left right ks (path-get right 0))))
 
 ;; distance
 
@@ -1109,13 +1245,27 @@
              res
              (dec level))))))))
 
+;; I feel like this could be more effecient if we don't get path
+;; then go back and get keys? don't know the code well enough yet
+(defn get-leaves [set from-path till-path]
+  (p/loop [leaves []
+           left from-path]
+    (if (path-lt left till-path)
+      (p/let [ks     (keys-for set left)
+              leaves (clojure.core/conj leaves ks)
+              ;; skip to the end of this array
+              left'  (path-set left 0 (dec (arrays/alength ks)))
+              left'' (next-path set left')]
+        (p/recur leaves left''))
+      leaves)))
+
 (defn- -slice [set key-from key-to comparator]
   (p/let [path (-seek* set key-from comparator)]
     (when (some? path)
       (p/let [till-path (-rseek* set key-to comparator)]
         (when (path-lt path till-path)
-          (p/let [ks (keys-for set path)]
-            (async-iter->vec (AsyncIter. set path till-path ks (path-get path 0)))))))))
+          (p/let [leaves (get-leaves set path till-path)]
+            (Iter. (first leaves) (next leaves) (path-get path 0) (path-get till-path 0))))))))
 
 (defn- arr-map-inplace [f arr]
   (let [len (arrays/alength arr)]
