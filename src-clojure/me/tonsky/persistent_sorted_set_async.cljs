@@ -328,17 +328,17 @@
       (ensure-addresses! this len)
       (p/loop [idx 0]
         (when (< idx len)
-          (p/do
-            (let [address (arrays/aget _addresses idx)]
-              (when (nil? address)
-                ;; in practice we shouldn't have to read reference but just in case
-                (p/let [child-node (read-reference (arrays/aget pointers idx))
-                        _ (assert (not (nil? child-node)))
-                        address (-store child-node storage)]
-                  (when address
-                    (arrays/aset _addresses idx address)
-                    (arrays/aset pointers idx (make-reference child-node))))))
-            (p/recur (inc idx)))))
+          (p/do!
+           (let [address (arrays/aget _addresses idx)]
+             (when (nil? address)
+               ;; in practice we shouldn't have to read reference but just in case
+               (p/let [child-node (read-reference (arrays/aget pointers idx))
+                       _ (assert (not (nil? child-node)))
+                       address (-store child-node storage)]
+                 (when address
+                   (arrays/aset _addresses idx address)
+                   (arrays/aset pointers idx (make-reference child-node))))))
+           (p/recur (inc idx)))))
       (storage/store storage this)))
 
   (-walk-addresses [this storage on-address]
@@ -346,14 +346,14 @@
       (ensure-addresses! this len)
       (p/loop [idx 0]
         (when (< idx len)
-          (p/do
-            (p/let [address    (arrays/aget _addresses idx)
-                    child-node (node-child this idx storage)]
-              (if address
-                (when (on-address address)
-                  (-walk-addresses child-node storage on-address))
-                (-walk-addresses child-node storage on-address)))
-            (p/recur (inc idx)))))))
+          (p/do!
+           (p/let [address    (arrays/aget _addresses idx)
+                   child-node (node-child this idx storage)]
+             (if address
+               (when (on-address address)
+                 (-walk-addresses child-node storage on-address))
+               (-walk-addresses child-node storage on-address)))
+           (p/recur (inc idx)))))))
 
   INode
   (node-lim-key [_]
@@ -383,22 +383,22 @@
                            (arrays/aget as 1)))))
 
   (node-child [_this idx ^storage/IStorage storage]
-    (p/do
-      ;; TODO: Remove when the implementation is stable
-      (assert (and (<= 0 idx)
-                   (< idx (arrays/alength pointers))))
-      (assert (or (and pointers (arrays/aget pointers idx))
-                  (and _addresses (arrays/aget _addresses idx))))
-      (let [child   (read-reference (arrays/aget pointers idx))
-            address (when _addresses (arrays/aget _addresses idx))]
-        (if child
-          (p/do (when (and storage address)
+    (p/do!
+     ;; TODO: Remove when the implementation is stable
+     (assert (and (<= 0 idx)
+                  (< idx (arrays/alength pointers))))
+     (assert (or (and pointers (arrays/aget pointers idx))
+                 (and _addresses (arrays/aget _addresses idx))))
+     (let [child   (read-reference (arrays/aget pointers idx))
+           address (when _addresses (arrays/aget _addresses idx))]
+       (if child
+         (p/do! (when (and storage address)
                   (storage/accessed storage address))
                 child)
-          (p/let [child (storage/restore storage address)]
-            (when-not child (throw (ex-info "node-child not found" {:address address})))
-            (arrays/aset pointers idx (make-reference child))
-            child)))))
+         (p/let [child (storage/restore storage address)]
+           (when-not child (throw (ex-info "node-child not found" {:address address})))
+           (arrays/aset pointers idx (make-reference child))
+           child)))))
 
   (node-lookup [this cmp key storage]
     (p/let [idx (lookup-range cmp keys key)]
@@ -579,23 +579,23 @@
   ;; we don't bother doing weak refs on the root
   ;; I figure you should always want to keep this in memory at least
   (-root [_]
-    (p/do
-      (or _root
-          (when _address
-            (p/let [node (storage/restore _storage _address)]
-              (when-not node (throw (ex-info "Root not found" {:address _address})))
-              (set! _root node)
-              node)))))
+    (p/do!
+     (or _root
+         (when _address
+           (p/let [node (storage/restore _storage _address)]
+             (when-not node (throw (ex-info "Root not found" {:address _address})))
+             (set! _root node)
+             node)))))
 
   INodeStore
   (-store [this]
-    (p/do
-      (assert (some? _storage) "Can't store without a storage")
-      (when (nil? _address)
-        (p/let [root    (-root this)
-                address (-store root _storage)]
-          (set! _address address)))
-      _address))
+    (p/do!
+     (assert (some? _storage) "Can't store without a storage")
+     (when (nil? _address)
+       (p/let [root    (-root this)
+               address (-store root _storage)]
+         (set! _address address)))
+     _address))
   (-store [this storage]
     (set! _storage storage)
     (-store this))
@@ -674,7 +674,7 @@
        (node-child node (path-get path level) (.-_storage set)))
       (.-keys node))))
 
-(defn- alter-btset [set root shift cnt]
+(defn- alter-btset [^BTSet set root shift cnt]
   (BTSet. (.-_storage set) root shift cnt (.-comparator set) (.-meta set) uninitialized-hash uninitialized-address))
 
 
@@ -930,7 +930,7 @@
   (-pr-writer [_ writer opts]
     (pr-sequential-writer writer pr-writer "(" " " ")" opts '("Iter") #_(seq this))))
 
-(deftype AsyncIter [set left right keys idx]
+(deftype AsyncIter [^BTSet set left right keys idx]
   IAsyncIter
   (-copy [_ l r]
     (p/let [ks (keys-for set l)]
@@ -947,9 +947,9 @@
 
   ISeq
   (-first [_]
-    (p/do
-      (when keys
-        (arrays/aget keys idx))))
+    (p/do!
+     (when keys
+       (arrays/aget keys idx))))
 
   (-rest [this]
     (p/let [n (-next this)]
@@ -957,27 +957,27 @@
 
   INext
   (-next [this]
-    (p/do
-      (when keys
-        (if (< (inc idx) (arrays/alength keys))
-          ;; can use cached array to move forward
-          (let [left' (path-inc left)]
-            (when (path-lt left' right)
-              (AsyncIter. set left' right keys (inc idx))))
-          (p/let [left' (next-path set left)]
-            (when (path-lt left' right)
-              (-copy this left' right)))))))
+    (p/do!
+     (when keys
+       (if (< (inc idx) (arrays/alength keys))
+         ;; can use cached array to move forward
+         (let [left' (path-inc left)]
+           (when (path-lt left' right)
+             (AsyncIter. set left' right keys (inc idx))))
+         (p/let [left' (next-path set left)]
+           (when (path-lt left' right)
+             (-copy this left' right)))))))
 
   IReduce
   (-reduce [this f]
-    (p/do
-      (if (nil? keys)
-        (f)
-        (p/let [first (-first this)
-                next  (-next this)]
-          (if (some? next)
-            (-reduce next f first)
-            first)))))
+    (p/do!
+     (if (nil? keys)
+       (f)
+       (p/let [first (-first this)
+               next  (-next this)]
+         (if (some? next)
+           (-reduce next f first)
+           first)))))
 
   (-reduce [_ f start]
     (p/loop [left left
@@ -1005,30 +1005,30 @@
 
   IReversible
   (-rseq [_]
-    (p/do
-      (when keys
-        (p/let [pl (prev-path set left)
-                pr (prev-path set right)]
-          (async-riter set pl pr)))))
+    (p/do!
+     (when keys
+       (p/let [pl (prev-path set left)
+               pr (prev-path set right)]
+         (async-riter set pl pr)))))
 
   ISeek
   (-seek [this key]
     (-seek this key (.-comparator set)))
 
   (-seek [this key cmp]
-    (p/do
-      (cond
-        (nil? key)
-        (throw (js/Error. "seek can't be called with a nil key!"))
+    (p/do!
+     (cond
+       (nil? key)
+       (throw (js/Error. "seek can't be called with a nil key!"))
 
-        (nat-int? (cmp (arrays/aget keys idx) key))
-        this
+       (nat-int? (cmp (arrays/aget keys idx) key))
+       this
 
-        :else
-        (p/let [left' (-seek* set key cmp)]
-          (when (some? left')
-            (p/let [ks (keys-for set left')]
-              (AsyncIter. set left' right ks (path-get left' 0))))))))
+       :else
+       (p/let [left' (-seek* set key cmp)]
+         (when (some? left')
+           (p/let [ks (keys-for set left')]
+             (AsyncIter. set left' right ks (path-get left' 0))))))))
 
   Object
   (toString [this] (pr-str* this))
@@ -1044,7 +1044,7 @@
 
 ;; reverse iteration
 
-(deftype AsyncReverseIter [set left right keys idx]
+(deftype AsyncReverseIter [^BTSet set left right keys idx]
   IAsyncIter
   (-copy [_ l r]
     (p/let [ks (keys-for set r)]
@@ -1061,9 +1061,9 @@
 
   ISeq
   (-first [_]
-    (p/do
-      (when keys
-        (arrays/aget keys idx))))
+    (p/do!
+     (when keys
+       (arrays/aget keys idx))))
 
   (-rest [this]
     (p/let [n (-next this)]
@@ -1071,27 +1071,27 @@
 
   INext
   (-next [this]
-    (p/do
-      (when keys
-        (if (> idx 0)
-          ;; can use cached array to advance
-          (let [right' (path-dec right)]
-            (when (path-lt left right')
-              (AsyncReverseIter. set left right' keys (dec idx))))
-          (p/let [right' (prev-path set right)]
-            (when (path-lt left right')
-              (-copy this left right')))))))
+    (p/do!
+     (when keys
+       (if (> idx 0)
+         ;; can use cached array to advance
+         (let [right' (path-dec right)]
+           (when (path-lt left right')
+             (AsyncReverseIter. set left right' keys (dec idx))))
+         (p/let [right' (prev-path set right)]
+           (when (path-lt left right')
+             (-copy this left right')))))))
 
   IReduce
   (-reduce [this f]
-    (p/do
-      (if (nil? keys)
-        (f)
-        (p/let [first (-first this)
-                next  (-next this)]
-          (if (some? next)
-            (-reduce next f first)
-            first)))))
+    (p/do!
+     (if (nil? keys)
+       (f)
+       (p/let [first (-first this)
+               next  (-next this)]
+         (if (some? next)
+           (-reduce next f first)
+           first)))))
 
   (-reduce [_ f start]
     (p/loop [right right
@@ -1119,34 +1119,34 @@
 
   IReversible
   (-rseq [_]
-    (p/do
-      (when keys
-        (p/let [nl (next-path set left)
-                nr (next-path set right)]
-          (async-iter set nl nr)))))
+    (p/do!
+     (when keys
+       (p/let [nl (next-path set left)
+               nr (next-path set right)]
+         (async-iter set nl nr)))))
 
   ISeek
   (-seek [this key]
     (-seek this key (.-comparator set)))
 
   (-seek [this key cmp]
-    (p/do
-      (cond
-        (nil? key)
-        (throw (js/Error. "seek can't be called with a nil key!"))
+    (p/do!
+     (cond
+       (nil? key)
+       (throw (js/Error. "seek can't be called with a nil key!"))
 
-        (nat-int? (cmp key (arrays/aget keys idx)))
-        this
+       (nat-int? (cmp key (arrays/aget keys idx)))
+       this
 
-        :else
-        (p/let [rs     (-rseek* set key cmp)
-                right' (prev-path set rs)]
-          (when (and
-                 (nat-int? right')
-                 (path-lte left right')
-                 (path-lt  right' right))
-            (p/let [ks (keys-for set right')]
-              (AsyncReverseIter. set left right' ks (path-get right' 0))))))))
+       :else
+       (p/let [rs     (-rseek* set key cmp)
+               right' (prev-path set rs)]
+         (when (and
+                (nat-int? right')
+                (path-lte left right')
+                (path-lt  right' right))
+           (p/let [ks (keys-for set right')]
+             (AsyncReverseIter. set left right' ks (path-get right' 0))))))))
 
   Object
   (toString [this] (pr-str* this))
@@ -1336,7 +1336,7 @@
 
 (defn conj
   "Analogue to [[clojure.core/conj]] with comparator that overrides the one stored in set."
-  [set key cmp]
+  [^BTSet set key cmp]
   (p/let [set-root (-root set)
           roots    (node-conj set-root cmp key (.-_storage set))]
     (cond
@@ -1364,7 +1364,7 @@
 
 (defn disj
   "Analogue to [[clojure.core/disj]] with comparator that overrides the one stored in set."
-  [set key cmp]
+  [^BTSet set key cmp]
   (p/let [set-root  (-root set)
           new-roots (node-disj set-root cmp key true nil nil (.-_storage set))]
     (if (nil? new-roots) ;; nothing changed, key wasn't in the set
@@ -1390,9 +1390,9 @@
   "An iterator for part of the set with provided boundaries.
    `(slice set from to)` returns iterator for all Xs where from <= X <= to.
    Optionally pass in comparator that will override the one that set uses. Supports efficient [[clojure.core/rseq]]."
-  ([set key-from key-to]
+  ([^BTSet set key-from key-to]
    (-slice set key-from key-to (.-comparator set)))
-  ([set key-from key-to comparator]
+  ([^BTSet set key-from key-to comparator]
    (-slice set key-from key-to comparator)))
 
 
@@ -1400,15 +1400,15 @@
   "A reverse iterator for part of the set with provided boundaries.
    `(rslice set from to)` returns backwards iterator for all Xs where from <= X <= to.
    Optionally pass in comparator that will override the one that set uses. Supports efficient [[clojure.core/rseq]]."
-  ([set key]
+  ([^BTSet set key]
    (p/let [s (-slice set key key (.-comparator set))]
      (when s
        (rseq s))))
-  ([set key-from key-to]
+  ([^BTSet set key-from key-to]
    (p/let [s (-slice set key-to key-from (.-comparator set))]
      (when s
        (rseq s))))
-  ([set key-from key-to comparator]
+  ([^BTSet set key-from key-to comparator]
    (p/let [s (-slice set key-to key-from comparator)]
      (when s
        (rseq s)))))

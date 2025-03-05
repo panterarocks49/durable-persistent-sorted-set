@@ -642,7 +642,7 @@
        (node-child node (path-get path level) (.-_storage set)))
       (.-keys node))))
 
-(defn- alter-btset [set root shift cnt]
+(defn- alter-btset [^BTSet set root shift cnt]
   (BTSet. (.-_storage set) root shift cnt (.-comparator set) (.-meta set) uninitialized-hash uninitialized-address))
 
 
@@ -793,7 +793,7 @@
 
 (declare -seek* -rseek*)
 
-(deftype Iter [set left right keys idx]
+(deftype Iter [^BTSet set left right keys idx]
   IIter
   (-copy [_ l r]
     (Iter. set l r (keys-for set l) (path-get l 0)))
@@ -910,7 +910,7 @@
 
 ;; reverse iteration
 
-(deftype ReverseIter [set left right keys idx]
+(deftype ReverseIter [^BTSet set left right keys idx]
   IIter
   (-copy [_ l r]
     (ReverseIter. set l r (keys-for set r) (path-get r 0)))
@@ -962,9 +962,9 @@
       :else
       (let [right' (prev-path set (-rseek* set key cmp))]
         (when (and
-                (nat-int? right')
-                (path-lte left right')
-                (path-lt  right' right))
+               (nat-int? right')
+               (path-lte left right')
+               (path-lt  right' right))
           (ReverseIter. set left right' (keys-for set right') (path-get right' 0))))))
 
   Object
@@ -1135,7 +1135,7 @@
 
 (defn conj
   "Analogue to [[clojure.core/conj]] with comparator that overrides the one stored in set."
-  [set key cmp]
+  [^BTSet set key cmp]
   (let [roots (node-conj (-root set) cmp key (.-_storage set))]
     (cond
       ;; tree not changed
@@ -1162,7 +1162,7 @@
 
 (defn disj
   "Analogue to [[clojure.core/disj]] with comparator that overrides the one stored in set."
-  [set key cmp]
+  [^BTSet set key cmp]
   (let [new-roots (node-disj (-root set) cmp key true nil nil (.-_storage set))]
     (if (nil? new-roots) ;; nothing changed, key wasn't in the set
       set
@@ -1187,22 +1187,22 @@
   "An iterator for part of the set with provided boundaries.
    `(slice set from to)` returns iterator for all Xs where from <= X <= to.
    Optionally pass in comparator that will override the one that set uses. Supports efficient [[clojure.core/rseq]]."
-  ([set key-from key-to]
-    (-slice set key-from key-to (.-comparator set)))
-  ([set key-from key-to comparator]
-    (-slice set key-from key-to comparator)))
+  ([^BTSet set key-from key-to]
+   (-slice set key-from key-to (.-comparator set)))
+  ([^BTSet set key-from key-to comparator]
+   (-slice set key-from key-to comparator)))
 
 
 (defn rslice
   "A reverse iterator for part of the set with provided boundaries.
    `(rslice set from to)` returns backwards iterator for all Xs where from <= X <= to.
    Optionally pass in comparator that will override the one that set uses. Supports efficient [[clojure.core/rseq]]."
-  ([set key]
-    (some-> (-slice set key key (.-comparator set)) rseq))
-  ([set key-from key-to]
-    (some-> (-slice set key-to key-from (.-comparator set)) rseq))
-  ([set key-from key-to comparator]
-    (some-> (-slice set key-to key-from comparator) rseq)))
+  ([^BTSet set key]
+   (some-> (-slice set key key (.-comparator set)) rseq))
+  ([^BTSet set key-from key-to]
+   (some-> (-slice set key-to key-from (.-comparator set)) rseq))
+  ([^BTSet set key-from key-to comparator]
+   (some-> (-slice set key-to key-from comparator) rseq)))
 
 
 (defn seek
