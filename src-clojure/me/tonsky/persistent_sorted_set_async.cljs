@@ -590,8 +590,8 @@
       (when (nil? _address)
         (p/let [root    (-root this)
                 address (-store root _storage)]
-          (set! _address address))))
-    _address)
+          (set! _address address)))
+      _address))
   (-store [this storage]
     (set! _storage storage)
     (-store this))
@@ -1256,7 +1256,6 @@
        (rseq s))))
   ([set key-from key-to]
    (p/let [s (-slice set key-to key-from (.-comparator set))]
-     (prn "here" s)
      (when s
        (rseq s))))
   ([set key-from key-to comparator]
