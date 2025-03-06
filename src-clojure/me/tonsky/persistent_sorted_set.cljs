@@ -4,6 +4,7 @@
     me.tonsky.persistent-sorted-set
   (:refer-clojure :exclude [iter conj disj sorted-set sorted-set-by set])
   (:require
+   [me.tonsky.chunk :refer [Chunk]]
    [me.tonsky.persistent-sorted-set.storage :as storage]
    [me.tonsky.persistent-sorted-set.arrays :as arrays])
   (:require-macros
@@ -747,41 +748,6 @@
           rpath (-rpath set (-root set) empty-path (.-shift set))
           right (next-path set rpath)]
       (iter set left right))))
-
-;; replace with cljs.core/ArrayChunk after https://dev.clojure.org/jira/browse/CLJS-2470
-(deftype Chunk [arr off end]
-  ICounted
-  (-count [_] (- end off))
-
-  IIndexed
-  (-nth [this i]
-    (aget arr (+ off i)))
-
-  (-nth [this i not-found]
-    (if (and (>= i 0) (< i (- end off)))
-      (aget arr (+ off i))
-      not-found))
-
-  IChunk
-  (-drop-first [this]
-    (if (== off end)
-      (throw (js/Error. "-drop-first of empty chunk"))
-      (ArrayChunk. arr (inc off) end)))
-
-  IReduce
-  (-reduce [this f]
-    (if (== off end)
-      (f)
-      (-reduce (-drop-first this) f (aget arr off))))
-
-  (-reduce [this f start]
-    (loop [val start, n off]
-      (if (< n end)
-        (let [val' (f val (aget arr n))]
-          (if (reduced? val')
-            @val'
-            (recur val' (inc n))))
-        val))))
 
 (defprotocol IIter
   (-copy [this left right]))

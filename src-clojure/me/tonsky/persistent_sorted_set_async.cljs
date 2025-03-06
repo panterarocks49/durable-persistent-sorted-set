@@ -5,6 +5,7 @@
   (:refer-clojure :exclude [iter conj disj sorted-set sorted-set-by set])
   (:require
    [promesa.core :as p]
+   [me.tonsky.chunk :refer [Chunk]]
    [me.tonsky.persistent-sorted-set.storage :as storage]
    [me.tonsky.persistent-sorted-set.arrays :as arrays])
   (:require-macros
@@ -841,6 +842,23 @@
         (when (< inc-idx end-idx)
           (Iter. arr cur-leaf leaves inc-idx end-idx)))))
 
+  IChunkedSeq
+  (-chunked-first [_]
+    (let [end-idx (if leaves
+                    (arrays/alength arr)
+                    end-idx)]
+      (Chunk. arr idx end-idx)))
+
+  (-chunked-rest [this]
+    (or (-chunked-next this) ()))
+
+  IChunkedNext
+  (-chunked-next [_]
+    (when leaves
+      (let [first-leaf (-first leaves)]
+        (Iter. (.-keys first-leaf) first-leaf (-next leaves) 0 end-idx))))
+
+
   IReduce
   (-reduce [this f]
     (if (nil? arr)
@@ -921,6 +939,7 @@
         (ReverseIter. arr cur-leaf rev-leaves (dec idx) end-idx))))
 
   ;; TODO: reduce protocol? would be faster
+  ;; but datascript doesn't use rslice much
 
   IReversible
   (-rseq [_]
