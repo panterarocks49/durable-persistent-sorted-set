@@ -1262,39 +1262,45 @@
 
 (defn get-leaves
   "Get the leaf nodes starting at path going until till-path."
-  ([set path till-path]
+  ([^BTSet set path till-path]
    (if (path-lt path till-path)
      (p/let [root   (-root set)
-             leaves (get-leaves set root path till-path (.-shift set))]
-       (if (instance? Leaf leaves)
+             level  (.-shift set)
+             leaves (get-leaves (.-_storage set) root path till-path level)]
+       ;; level 0 the root is a leaf
+       (if (== 0 level)
          [leaves]
          leaves))
      (p/resolved nil)))
-  ([set node path till-path level]
-   (if (pos? level)
-     ;; inner node
-     (let [children-len (arrays/alength (.-pointers node))]
-       (p/loop [path   path
-                leaves (transient [])]
-         (if (path-lt path till-path)
-           (p/let [idx        (path-get path level)
-                   child      (node-child node idx (.-_storage set))
-                   sub-leaves (get-leaves set child path till-path (dec level))]
-             ;; if sub levels had leaves, add them to the acc
-             (if sub-leaves
-               (let [new-leaves (if (instance? Leaf sub-leaves)
-                                  (conj! leaves sub-leaves)
-                                  (reduce conj! leaves sub-leaves))]
-                 (if (< (inc idx) children-len)
-                   ;; have to zero out lower levels when inc this level
-                   ;; really only need to do this on first iteration
-                   (p/recur (path-set-zero-lower path level (inc idx))
-                            new-leaves)
-                   (persistent! new-leaves)))
-               (persistent! leaves)))
-           (persistent! leaves))))
+  ([storage node path till-path level]
+   (if (== 0 level)
      ;; leaf
-     node)))
+     node
+     ;; inner node
+     (p/let [children-len (arrays/alength (.-pointers ^Node node))
+             ;; fetch all the children in parallel
+             children
+             (loop [path           path
+                    child-promises (transient [])]
+               ;; if we are past the path, return up
+               (if (path-lt path till-path)
+                 (let [idx (path-get path level)
+                       p   (p/let [child (node-child node idx storage)]
+                             (get-leaves storage child path till-path (dec level)))]
+                   ;; if we reached the end of this node, return up
+                   (if (< (inc idx) children-len)
+                     ;; have to zero out lower levels when inc this level
+                     ;; really only need to do this on first iteration
+                     (recur (path-set-zero-lower path level (inc idx))
+                            (conj! child-promises p))
+                     (p/all (persistent! (conj! child-promises p)))))
+                 (p/all (persistent! child-promises))))]
+       ;; if we are at level 1, all of the children are leaves
+       (if (== 1 level)
+         children
+         (into []
+               (mapcat identity)
+               children))))))
 
 (defn- -slice [set key-from key-to comparator]
   (p/let [path (-seek* set key-from comparator)]
