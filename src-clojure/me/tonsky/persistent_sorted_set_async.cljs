@@ -1173,42 +1173,6 @@
   (p/let [ks (keys-for set right)]
     (AsyncReverseIter. set left right ks (path-get right 0))))
 
-;; distance
-
-;; TODO
-(defn- -distance [set node left right level]
-  (let [idx-l (path-get left level)
-        idx-r (path-get right level)]
-    (if (pos? level)
-      ;; inner node
-      (if (== idx-l idx-r)
-        (-distance set (node-child node idx-l (.-_storage set)) left right (dec level))
-        (loop [level level
-               res   (- idx-r idx-l)]
-          (if (== 0 level)
-            res
-            (recur (dec level) (* res avg-len)))))
-      (- idx-r idx-l))))
-
-(defn- distance [set path-l path-r]
-  (cond
-    (path-eq path-l path-r)
-    0
-
-    (path-eq (path-inc path-l) path-r)
-    1
-
-    (path-eq (next-path set path-l) path-r)
-    1
-
-    :else
-    (-distance set (-root set) path-l path-r (.-shift set))))
-
-;; TODO: this is broken?
-(defn est-count [iter]
-  (distance (.-set iter) (.-left iter) (.-right iter)))
-
-
 ;; Slicing
 
 (defn- -seek*
