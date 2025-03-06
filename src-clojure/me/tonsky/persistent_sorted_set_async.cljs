@@ -312,8 +312,14 @@
     (let [nodes (node-merge-n-split node right)]
       (return-array left (arrays/aget nodes 0) (arrays/aget nodes 1)))))
 
+(declare Node)
+
 (defn make-reference [node]
-  (js/WeakRef. node))
+  ;; keep nodes/branches in memory forever
+  ;; should be less than 1% of the size of the set
+  (if (instance? Node node)
+    node
+    (js/WeakRef. node)))
 
 (defn read-reference [node]
   (if (instance? js/WeakRef node)
