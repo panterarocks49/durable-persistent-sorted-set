@@ -102,6 +102,15 @@
         (- minus)
         (+ plus))))
 
+(defn- path-set-zero-lower
+  "Set the path at level to idx, zero out the lower levels"
+  [path level idx]
+  (loop [path (path-set path level idx)
+         level (dec level)]
+    (if (<= 0 level)
+      (recur (path-set path level 0) (dec level))
+      path)))
+
 (defn- path-inc ^number [^number path]
   (inc path))
 
@@ -267,6 +276,8 @@
   (node-len           [_])
   (node-merge         [_ next])
   (node-merge-n-split [_ next])
+  ;; all functions below may or may not return a promise
+  ;; it's slower to always return a promise
   (node-child         [_ idx storage])
   (node-lookup        [_ cmp key storage])
   (node-conj          [_ cmp key storage])
@@ -383,25 +394,24 @@
                            (arrays/aget as 1)))))
 
   (node-child [_this idx ^storage/IStorage storage]
-    (p/do!
-     ;; TODO: Remove when the implementation is stable
-     (assert (and (<= 0 idx)
-                  (< idx (arrays/alength pointers))))
-     (assert (or (and pointers (arrays/aget pointers idx))
-                 (and _addresses (arrays/aget _addresses idx))))
-     (let [child   (read-reference (arrays/aget pointers idx))
-           address (when _addresses (arrays/aget _addresses idx))]
-       (if child
-         (p/do! (when (and storage address)
-                  (storage/accessed storage address))
-                child)
-         (p/let [child (storage/restore storage address)]
-           (when-not child (throw (ex-info "node-child not found" {:address address})))
-           (arrays/aset pointers idx (make-reference child))
-           child)))))
+    ;; TODO: Remove when the implementation is stable
+    (assert (and (<= 0 idx)
+                 (< idx (arrays/alength pointers))))
+    (assert (or (and pointers (arrays/aget pointers idx))
+                (and _addresses (arrays/aget _addresses idx))))
+    (let [child   (read-reference (arrays/aget pointers idx))
+          address (when _addresses (arrays/aget _addresses idx))]
+      (if child
+        (do (when (and storage address)
+              (storage/accessed storage address))
+            child)
+        (p/let [child (storage/restore storage address)]
+          (when-not child (throw (ex-info "node-child not found" {:address address})))
+          (arrays/aset pointers idx (make-reference child))
+          child))))
 
   (node-lookup [this cmp key storage]
-    (p/let [idx (lookup-range cmp keys key)]
+    (let [idx (lookup-range cmp keys key)]
       (when-not (== -1 idx)
         (p/let [child (node-child this idx storage)]
           (node-lookup child cmp key storage)))))
@@ -431,7 +441,7 @@
 
   (node-disj [this cmp key root? left right storage]
     (ensure-addresses! this (arrays/alength pointers))
-    (p/let [idx (lookup-range cmp keys key)]
+    (let [idx (lookup-range cmp keys key)]
       (when-not (== -1 idx) ;; short-circuit, key not here
         (p/let [child       (node-child this idx storage)
                 left-child  (when (>= (dec idx) 0)
@@ -455,7 +465,6 @@
                   new-addresses (splice             _addresses left-idx right-idx (arrays/amap find-address disjned))]
               (rotate (Node. new-keys new-pointers new-addresses) root? left right))))))))
 
-;; TODO: Leaf doesn't need to be async but should it be to be compatible?
 (deftype Leaf [keys]
   INodeStore
   (-store [this storage]
@@ -579,13 +588,12 @@
   ;; we don't bother doing weak refs on the root
   ;; I figure you should always want to keep this in memory at least
   (-root [_]
-    (p/do!
-     (or _root
-         (when _address
-           (p/let [node (storage/restore _storage _address)]
-             (when-not node (throw (ex-info "Root not found" {:address _address})))
-             (set! _root node)
-             node)))))
+    (or _root
+        (when _address
+          (p/let [node (storage/restore _storage _address)]
+            (when-not node (throw (ex-info "Root not found" {:address _address})))
+            (set! _root node)
+            node))))
 
   INodeStore
   (-store [this]
@@ -681,7 +689,7 @@
 ;; iteration
 
 (defn- -next-path [set node ^number path ^number level]
-  (p/let [idx (path-get path level)]
+  (let [idx (path-get path level)]
     (if (pos? level)
       ;; inner node
       (p/let [child    (node-child node idx (.-_storage set))
@@ -710,10 +718,9 @@
            level level]
     (if (pos? level)
       ;; inner node
-      (p/let [end-idx   (dec (arrays/alength (.-pointers node)))
-              last-child (node-child node end-idx (.-_storage set))]
+      (let [end-idx (dec (arrays/alength (.-pointers node)))]
         (p/recur
-         last-child
+         (node-child node end-idx (.-_storage set))
          (path-set path level end-idx)
          (dec level)))
       ;; leaf
@@ -724,7 +731,7 @@
    Will overflow at leaf if at the end of the tree"
   [set ^number path]
   (if (neg? path)
-    (p/resolved empty-path)
+    empty-path
     (p/let [root (-root set)
             np   (-next-path set root path (.-shift set))]
       (if np
@@ -733,7 +740,7 @@
           (path-inc rp))))))
 
 (defn- -prev-path [set node ^number path ^number level]
-  (p/let [idx (path-get path level)]
+  (let [idx (path-get path level)]
     (cond
       ;; leaf overflow
       (and (== 0 level) (== 0 idx))
@@ -1162,6 +1169,7 @@
 
 ;; distance
 
+;; TODO
 (defn- -distance [set node left right level]
   (let [idx-l (path-get left level)
         idx-r (path-get right level)]
@@ -1190,6 +1198,7 @@
     :else
     (-distance set (-root set) path-l path-r (.-shift set))))
 
+;; TODO: this is broken?
 (defn est-count [iter]
   (distance (.-set iter) (.-left iter) (.-right iter)))
 
@@ -1201,7 +1210,7 @@
    or -1 if all elements in a set < key"
   [set key comparator]
   (if (nil? key)
-    (p/resolved empty-path)
+    empty-path
     (p/loop [node  (-root set)
              path  empty-path
              level (.-shift set)]
@@ -1226,7 +1235,7 @@
   [set key comparator]
   (if (nil? key)
     (p/let [root (-root set)
-            rp (-rpath set root empty-path (.-shift set))]
+            rp   (-rpath set root empty-path (.-shift set))]
       (path-inc rp))
     (p/loop [node  (-root set)
              path  empty-path
@@ -1245,26 +1254,51 @@
              res
              (dec level))))))))
 
-;; I feel like this could be more effecient if we don't get path
-;; then go back and get keys? don't know the code well enough yet
-(defn get-leaves [set from-path till-path]
-  (p/loop [leaves []
-           left from-path]
-    (if (path-lt left till-path)
-      (p/let [ks     (keys-for set left)
-              leaves (clojure.core/conj leaves ks)
-              ;; skip to the end of this array
-              left'  (path-set left 0 (dec (arrays/alength ks)))
-              left'' (next-path set left')]
-        (p/recur leaves left''))
-      leaves)))
+(defn get-leaves
+  "Get the leaf nodes starting at path going until till-path."
+  ([set path till-path]
+   (if (path-lt path till-path)
+     (p/let [root   (-root set)
+             leaves (get-leaves set root path till-path (.-shift set))]
+       (if (instance? Leaf leaves)
+         [leaves]
+         leaves))
+     (p/resolved nil)))
+  ([set node path till-path level]
+   (if (pos? level)
+     ;; inner node
+     (let [children-len (arrays/alength (.-pointers node))]
+       (p/loop [path   path
+                leaves (transient [])]
+         (if (path-lt path till-path)
+           (p/let [idx        (path-get path level)
+                   child      (node-child node idx (.-_storage set))
+                   sub-leaves (get-leaves set child path till-path (dec level))]
+             ;; if sub levels had leaves, add them to the acc
+             (if sub-leaves
+               (let [new-leaves (if (instance? Leaf sub-leaves)
+                                  (conj! leaves sub-leaves)
+                                  (reduce conj! leaves sub-leaves))]
+                 (if (< (inc idx) children-len)
+                   ;; have to zero out lower levels when inc this level
+                   ;; really only need to do this on first iteration
+                   (p/recur (path-set-zero-lower path level (inc idx))
+                            new-leaves)
+                   (persistent! new-leaves)))
+               (persistent! leaves)))
+           (persistent! leaves))))
+     ;; leaf
+     node)))
 
 (defn- -slice [set key-from key-to comparator]
   (p/let [path (-seek* set key-from comparator)]
     (when (some? path)
       (p/let [till-path (-rseek* set key-to comparator)]
         (when (path-lt path till-path)
-          (p/let [leaves (get-leaves set path till-path)]
+          (p/let [leaves (get-leaves set path till-path)
+                  ;; TODO: we should just use the leaves?
+                  ;; worried about them being GCed earlier than they could be
+                  leaves (mapv #(.-keys %) leaves)]
             (Iter. (first leaves) (next leaves) (path-get path 0) (path-get till-path 0))))))))
 
 (defn- arr-map-inplace [f arr]
@@ -1480,7 +1514,6 @@
    will fetch missing nodes by calling IStorage::restore when needed"
   ([cmp address storage]
    (restore-by cmp address storage {}))
-  ;; TODO: is this the right thing for storing shift and count?
   ([cmp address storage {:keys [set-metadata]}]
    (BTSet. storage nil (:shift set-metadata) (:count set-metadata) cmp nil uninitialized-hash address)))
 
