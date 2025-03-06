@@ -812,33 +812,34 @@
 
 (declare -seek* -rseek* ReverseIter)
 
-(deftype Iter [arr leaves idx end-idx]
+;; arr is the first leaf keys
+;; arr should always exist
+(deftype Iter [^js arr cur-leaf leaves idx end-idx]
   IEquiv
   #_:clj-kondo/ignore
   (-equiv [this other] (equiv-sequential this other))
 
   ISequential
   ISeqable
-  (-seq [this] (when arr this))
+  (-seq [this] this)
 
   ISeq
   (-first [_]
-    (when arr
-      (arrays/aget arr idx)))
+    (arrays/aget arr idx))
 
   (-rest [this]
-    (or (-next this) ()))
+    (or (-next this) '()))
 
   INext
   (-next [_]
-    (when arr
-      (let [inc-idx (inc idx)]
-        (if leaves
-          (if (< inc-idx (arrays/alength arr))
-            (Iter. arr leaves inc-idx end-idx)
-            (Iter. (first leaves) (next leaves) 0 end-idx))
-          (when (< inc-idx end-idx)
-            (Iter. arr leaves inc-idx end-idx))))))
+    (let [inc-idx (inc idx)]
+      (if leaves
+        (if (< inc-idx (arrays/alength arr))
+          (Iter. arr cur-leaf leaves inc-idx end-idx)
+          (let [first-leaf (-first leaves)]
+            (Iter. (.-keys first-leaf) first-leaf (-next leaves) 0 end-idx)))
+        (when (< inc-idx end-idx)
+          (Iter. arr cur-leaf leaves inc-idx end-idx)))))
 
   IReduce
   (-reduce [this f]
@@ -855,25 +856,25 @@
            leaves leaves
            idx    idx
            acc    start]
-      (if arr
-        (let [new-acc (f acc (arrays/aget arr idx))
-              inc-idx (inc idx)]
-          (if (reduced? new-acc)
-            @new-acc
-            (if leaves
-              (if (< inc-idx (arrays/alength arr))
-                (recur arr leaves inc-idx new-acc)
-                (recur (first leaves) (next leaves) 0 new-acc))
-              (if (< inc-idx end-idx)
-                (recur arr leaves inc-idx new-acc)
-                new-acc))))
-        acc)))
+      (let [new-acc (f acc (arrays/aget arr idx))
+            inc-idx (inc idx)]
+        (if (reduced? new-acc)
+          @new-acc
+          (if leaves
+            (if (< inc-idx (arrays/alength arr))
+              (recur arr leaves inc-idx new-acc)
+              (recur (.-keys (-first leaves)) (-next leaves) 0 new-acc))
+            (if (< inc-idx end-idx)
+              (recur arr leaves inc-idx new-acc)
+              new-acc))))))
 
   IReversible
   (-rseq [_]
-    (let [leaves     (into [arr] leaves)
-          rev-leaves (reverse leaves)]
-      (ReverseIter. (first rev-leaves) (next rev-leaves) (dec end-idx) (dec idx))))
+    (let [rev-leaves (-> '()
+                         (clojure.core/conj cur-leaf)
+                         (into leaves))
+          first-leaf (first rev-leaves)]
+      (ReverseIter. (.-keys first-leaf) first-leaf (next rev-leaves) (dec end-idx) (dec idx))))
 
   ;; ISeek
   ;; (-seek [this key]
@@ -890,43 +891,44 @@
   (-pr-writer [this writer opts]
     (pr-sequential-writer writer pr-writer "(" " " ")" opts (seq this))))
 
-(deftype ReverseIter [arr rev-leaves idx end-idx]
+(deftype ReverseIter [^js arr cur-leaf rev-leaves idx end-idx]
   IEquiv
   #_:clj-kondo/ignore
   (-equiv [this other] (equiv-sequential this other))
 
   ISequential
   ISeqable
-  (-seq [this] (when arr this))
+  (-seq [this] this)
 
   ISeq
   (-first [_]
-    (when arr
-      (arrays/aget arr idx)))
+    (arrays/aget arr idx))
 
   (-rest [this]
-    (or (-next this) ()))
+    (or (-next this) '()))
 
   INext
   (-next [_]
     ;; reverse so we walk backwards in the array
     ;; but leaves are in reverse order already
-    (when arr
-      (if rev-leaves
-        (if (< 0 idx)
-          (ReverseIter. arr rev-leaves (dec idx) end-idx)
-          (let [next-arr (first rev-leaves)]
-            (ReverseIter. next-arr (next rev-leaves) (dec (arrays/alength next-arr)) end-idx)))
-        (when (< end-idx (dec idx))
-          (ReverseIter. arr rev-leaves (dec idx) end-idx)))))
+    (if rev-leaves
+      (if (< 0 idx)
+        (ReverseIter. arr cur-leaf rev-leaves (dec idx) end-idx)
+        (let [first-leaf (-first rev-leaves)
+              first-arr  (.-keys first-leaf)]
+          (ReverseIter. first-arr first-leaf (next rev-leaves) (dec (arrays/alength first-arr)) end-idx)))
+      (when (< end-idx (dec idx))
+        (ReverseIter. arr cur-leaf rev-leaves (dec idx) end-idx))))
 
   ;; TODO: reduce protocol? would be faster
 
   IReversible
   (-rseq [_]
-    (let [rev-leaves (into [arr] rev-leaves)
-          leaves     (reverse rev-leaves)]
-      (Iter. (first leaves) (next leaves) (inc end-idx) (inc idx))))
+    (let [leaves     (-> '()
+                         (clojure.core/conj cur-leaf)
+                         (into rev-leaves))
+          first-leaf (first rev-leaves)]
+      (Iter. (.-keys first-leaf) first-leaf (next leaves) (inc end-idx) (inc idx))))
 
   ;; ISeek
   ;; (-seek [this key]
@@ -1271,11 +1273,10 @@
     (when (some? path)
       (p/let [till-path (-rseek* set key-to comparator)]
         (when (path-lt path till-path)
-          (p/let [leaves (get-leaves set path till-path)
-                  ;; TODO: we should just use the leaves?
-                  ;; worried about them being GCed earlier than they could be
-                  leaves (mapv #(.-keys %) leaves)]
-            (Iter. (first leaves) (next leaves) (path-get path 0) (path-get till-path 0))))))))
+          (p/let [leaves     (get-leaves set path till-path)
+                  first-leaf (first leaves)]
+            (when first-leaf
+              (Iter. (.-keys first-leaf) first-leaf (next leaves) (path-get path 0) (path-get till-path 0)))))))))
 
 (defn- arr-map-inplace [f arr]
   (let [len (arrays/alength arr)]
