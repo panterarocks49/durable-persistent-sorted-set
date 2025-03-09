@@ -1366,54 +1366,58 @@
 
 (defn conj
   "Analogue to [[clojure.core/conj]] with comparator that overrides the one stored in set."
-  [^BTSet set key cmp]
-  (p/let [set-root (-root set)
-          roots    (node-conj set-root cmp key (.-_storage set))]
-    (cond
-      ;; tree not changed
-      (nil? roots)
-      set
+  ([^BTSet set key]
+   (conj set key (.-comparator set)))
+  ([^BTSet set key cmp]
+   (p/let [set-root (-root set)
+           roots    (node-conj set-root cmp key (.-_storage set))]
+     (cond
+       ;; tree not changed
+       (nil? roots)
+       set
 
-      ;; keeping single root
-      (== (arrays/alength roots) 1)
-      (alter-btset set
-                   (arrays/aget roots 0)
-                   (.-shift set)
-                   (inc (.-cnt set)))
+       ;; keeping single root
+       (== (arrays/alength roots) 1)
+       (alter-btset set
+                    (arrays/aget roots 0)
+                    (.-shift set)
+                    (inc (.-cnt set)))
 
-      ;; introducing new root
-      :else
-      (alter-btset set
-                   (Node. (arrays/amap node-lim-key roots)
-                          roots
-                          ;; in conj, we init nil addresses because the nodes returned are always new
-                          (arrays/make-array (arrays/alength roots)))
-                   (inc (.-shift set))
-                   (inc (.-cnt set))))))
+       ;; introducing new root
+       :else
+       (alter-btset set
+                    (Node. (arrays/amap node-lim-key roots)
+                           roots
+                           ;; in conj, we init nil addresses because the nodes returned are always new
+                           (arrays/make-array (arrays/alength roots)))
+                    (inc (.-shift set))
+                    (inc (.-cnt set)))))))
 
 
 (defn disj
   "Analogue to [[clojure.core/disj]] with comparator that overrides the one stored in set."
-  [^BTSet set key cmp]
-  (p/let [set-root  (-root set)
-          new-roots (node-disj set-root cmp key true nil nil (.-_storage set))]
-    (if (nil? new-roots) ;; nothing changed, key wasn't in the set
-      set
-      (let [new-root (arrays/aget new-roots 0)]
-        (if (and (instance? Node new-root)
-                 (== 1 (arrays/alength (.-pointers new-root))))
+  ([^BTSet set key]
+   (disj set key (.-comparator set)))
+  ([^BTSet set key cmp]
+   (p/let [set-root  (-root set)
+           new-roots (node-disj set-root cmp key true nil nil (.-_storage set))]
+     (if (nil? new-roots) ;; nothing changed, key wasn't in the set
+       set
+       (let [new-root (arrays/aget new-roots 0)]
+         (if (and (instance? Node new-root)
+                  (== 1 (arrays/alength (.-pointers new-root))))
 
-          ;; root has one child, make him new root
-          (alter-btset set
-                       (node-child new-root 0 (.-_storage set))
-                       (dec (.-shift set))
-                       (dec (.-cnt set)))
+           ;; root has one child, make him new root
+           (alter-btset set
+                        (node-child new-root 0 (.-_storage set))
+                        (dec (.-shift set))
+                        (dec (.-cnt set)))
 
-          ;; keeping root level
-          (alter-btset set
-                       new-root
-                       (.-shift set)
-                       (dec (.-cnt set))))))))
+           ;; keeping root level
+           (alter-btset set
+                        new-root
+                        (.-shift set)
+                        (dec (.-cnt set)))))))))
 
 
 (defn slice
