@@ -1,4 +1,5 @@
-{:lint-as {promesa.core/let   clojure.core/let
-           promesa.core/plet  clojure.core/let
-           promesa.core/loop  clojure.core/loop
-           promesa.core/recur clojure.core/recur}}
+{:lint-as {promesa.core/let            clojure.core/let
+           promesa.core/plet           clojure.core/let
+           me.tonsky.promises/plet-ifp clojure.core/let
+           promesa.core/loop           clojure.core/loop
+           promesa.core/recur          clojure.core/recur}}
