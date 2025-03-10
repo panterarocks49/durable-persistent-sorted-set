@@ -81,7 +81,6 @@
           rsv-s (gensym "resolve-fn-")
           inner `(p/fnly
                   (fn [~res-s ~err-s]
-                    ;; (prn "result" res# err#)
                     (if (some? ~err-s)
                       (~rej-s ~err-s)
                       (if (recur? ~res-s)
@@ -130,7 +129,6 @@
           res-s (gensym "res-")
           inner `(p/then
                   (fn [~res-s]
-                    (prn "oops async")
                     (if (recur? ~res-s)
                       (aloop*
                        [~@(->> names
