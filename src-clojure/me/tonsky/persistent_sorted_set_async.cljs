@@ -6,6 +6,7 @@
   (:require
    [promesa.core :as p]
    [me.tonsky.chunk :refer [Chunk]]
+   [me.tonsky.maybe-promise :as mp]
    [me.tonsky.persistent-sorted-set.storage :as storage]
    [me.tonsky.persistent-sorted-set.arrays :as arrays])
   (:require-macros
@@ -412,7 +413,7 @@
         (do (when (and storage address)
               (storage/accessed storage address))
             child)
-        (p/let [child (storage/restore storage address)]
+        (mp/let [child (storage/restore storage address)]
           (when-not child (throw (ex-info "node-child not found" {:address address})))
           (arrays/aset pointers idx (make-reference child))
           child))))
@@ -420,14 +421,14 @@
   (node-lookup [this cmp key storage]
     (let [idx (lookup-range cmp keys key)]
       (when-not (== -1 idx)
-        (p/let [child (node-child this idx storage)]
+        (mp/let [child (node-child this idx storage)]
           (node-lookup child cmp key storage)))))
 
   (node-conj [this cmp key storage]
     (ensure-addresses! this (arrays/alength pointers))
-    (p/let [idx   (binary-search-l cmp keys (- (arrays/alength keys) 2) key)
-            child (node-child this idx storage)
-            nodes (node-conj child cmp key storage)]
+    (mp/let [idx   (binary-search-l cmp keys (- (arrays/alength keys) 2) key)
+             child (node-child this idx storage)
+             nodes (node-conj child cmp key storage)]
       (when nodes
         (let [new-keys      (check-n-splice cmp keys       idx (inc idx) (arrays/amap node-lim-key nodes))
               new-pointers  (splice             pointers   idx (inc idx) nodes)
@@ -450,12 +451,12 @@
     (ensure-addresses! this (arrays/alength pointers))
     (let [idx (lookup-range cmp keys key)]
       (when-not (== -1 idx) ;; short-circuit, key not here
-        (p/let [child       (node-child this idx storage)
-                left-child  (when (>= (dec idx) 0)
-                              (node-child this (dec idx) storage))
-                right-child (when (< (inc idx) (arrays/alength pointers))
-                              (node-child this (inc idx) storage))
-                disjned     (node-disj child cmp key false left-child right-child storage)]
+        (mp/let [child       (node-child this idx storage)
+                 left-child  (when (>= (dec idx) 0)
+                               (node-child this (dec idx) storage))
+                 right-child (when (< (inc idx) (arrays/alength pointers))
+                               (node-child this (inc idx) storage))
+                 disjned     (node-disj child cmp key false left-child right-child storage)]
           (when disjned     ;; short-circuit, key not here
             (let [left-idx      (if left-child  (dec idx) idx)
                   right-idx     (if right-child (+ 2 idx) (+ 1 idx))
@@ -597,7 +598,7 @@
   (-root [_]
     (or _root
         (when _address
-          (p/let [node (storage/restore _storage _address)]
+          (mp/let [node (storage/restore _storage _address)]
             (when-not node (throw (ex-info "Root not found" {:address _address})))
             (set! _root node)
             node))))
@@ -624,10 +625,10 @@
 
   ILookup
   (-lookup [this k]
-    (p/let [root (-root this)]
+    (mp/let [root (-root this)]
       (node-lookup root comparator k _storage)))
   (-lookup [this k not-found]
-    (p/let [root (-root this)]
+    (mp/let [root (-root this)]
       (or (node-lookup root comparator k _storage) not-found)))
 
   ISeqable
@@ -1202,9 +1203,9 @@
   [set key comparator]
   (if (nil? key)
     empty-path
-    (p/loop [node  (-root set)
-             path  empty-path
-             level (.-shift set)]
+    (mp/loop [node  (-root set)
+              path  empty-path
+              level (.-shift set)]
       (let [keys-l (node-len node)]
         (if (== 0 level)
           (let [keys (.-keys node)
@@ -1214,7 +1215,7 @@
               (path-set path 0 idx)))
           (let [keys (.-keys node)
                 idx  (binary-search-l comparator keys (- keys-l 2) key)]
-            (p/recur
+            (mp/recur
              (node-child node idx (.-_storage set))
              (path-set path level idx)
              (dec level))))))))
@@ -1225,12 +1226,12 @@
    It’s a virtual path that is bigger than any path in a tree"
   [set key comparator]
   (if (nil? key)
-    (p/let [root (-root set)
-            rp   (-rpath set root empty-path (.-shift set))]
+    (mp/let [root (-root set)
+             rp   (-rpath set root empty-path (.-shift set))]
       (path-inc rp))
-    (p/loop [node  (-root set)
-             path  empty-path
-             level (.-shift set)]
+    (mp/loop [node  (-root set)
+              path  empty-path
+              level (.-shift set)]
       (let [keys-l (node-len node)]
         (if (== 0 level)
           (let [keys (.-keys node)
@@ -1240,7 +1241,7 @@
           (let [keys (.-keys node)
                 idx  (binary-search-r comparator keys (- keys-l 2) key)
                 res  (path-set path level idx)]
-            (p/recur
+            (mp/recur
              (node-child node idx (.-_storage set))
              res
              (dec level))))))))
@@ -1248,38 +1249,37 @@
 (defn get-leaves
   "Get the leaf nodes starting at path going until till-path."
   ([^BTSet set path till-path]
-   (if (path-lt path till-path)
-     (p/let [root   (-root set)
-             level  (.-shift set)
-             leaves (get-leaves (.-_storage set) root path till-path level)]
+   (when (path-lt path till-path)
+     (mp/let [root   (-root set)
+              level  (.-shift set)
+              leaves (get-leaves (.-_storage set) root path till-path level)]
        ;; level 0 the root is a leaf
        (if (== 0 level)
          [leaves]
-         leaves))
-     (p/resolved nil)))
+         leaves))))
   ([storage node path till-path level]
    (if (== 0 level)
      ;; leaf
      node
      ;; inner node
-     (p/let [children-len (arrays/alength (.-pointers ^Node node))
-             ;; fetch all the children in parallel
-             children
-             (loop [path           path
-                    child-promises (transient [])]
-               ;; if we are past the path, return up
-               (if (path-lt path till-path)
-                 (let [idx (path-get path level)
-                       p   (p/let [child (node-child node idx storage)]
-                             (get-leaves storage child path till-path (dec level)))]
-                   ;; if we reached the end of this node, return up
-                   (if (< (inc idx) children-len)
-                     ;; have to zero out lower levels when inc this level
-                     ;; really only need to do this on first iteration
-                     (recur (path-set-zero-lower path level (inc idx))
-                            (conj! child-promises p))
-                     (p/all (persistent! (conj! child-promises p)))))
-                 (p/all (persistent! child-promises))))]
+     (mp/let [children-len (arrays/alength (.-pointers ^Node node))
+              ;; fetch all the children in parallel
+              children
+              (loop [path           path
+                     child-promises (transient [])]
+                ;; if we are past the path, return up
+                (if (path-lt path till-path)
+                  (let [idx (path-get path level)
+                        p   (mp/let [child (node-child node idx storage)]
+                              (get-leaves storage child path till-path (dec level)))]
+                    ;; if we reached the end of this node, return up
+                    (if (< (inc idx) children-len)
+                      ;; have to zero out lower levels when inc this level
+                      ;; really only need to do this on first iteration
+                      (recur (path-set-zero-lower path level (inc idx))
+                             (conj! child-promises p))
+                      (mp/all (persistent! (conj! child-promises p)))))
+                  (mp/all (persistent! child-promises))))]
        ;; if we are at level 1, all of the children are leaves
        (if (== 1 level)
          children
@@ -1288,12 +1288,12 @@
                children))))))
 
 (defn- -slice [set key-from key-to comparator]
-  (p/let [path (-seek* set key-from comparator)]
+  (mp/let [path (-seek* set key-from comparator)]
     (when (some? path)
-      (p/let [till-path (-rseek* set key-to comparator)]
+      (mp/let [till-path (-rseek* set key-to comparator)]
         (when (path-lt path till-path)
-          (p/let [leaves     (get-leaves set path till-path)
-                  first-leaf (first leaves)]
+          (mp/let [leaves     (get-leaves set path till-path)
+                   first-leaf (first leaves)]
             (when first-leaf
               (Iter. (.-keys first-leaf) first-leaf (next leaves) (path-get path 0) (path-get till-path 0)))))))))
 
@@ -1362,15 +1362,16 @@
               (recur (conj! acc e) (inc i) e))))))))
 
 
+
 ;; Public interface
 
 (defn conj
-  "Analogue to [[clojure.core/conj]] with comparator that overrides the one stored in set."
+  "Like `conj` but may or may not return a promise, depending on if the data is in memory"
   ([^BTSet set key]
    (conj set key (.-comparator set)))
   ([^BTSet set key cmp]
-   (p/let [set-root (-root set)
-           roots    (node-conj set-root cmp key (.-_storage set))]
+   (mp/let [set-root (-root set)
+            roots    (node-conj set-root cmp key (.-_storage set))]
      (cond
        ;; tree not changed
        (nil? roots)
@@ -1399,8 +1400,8 @@
   ([^BTSet set key]
    (disj set key (.-comparator set)))
   ([^BTSet set key cmp]
-   (p/let [set-root  (-root set)
-           new-roots (node-disj set-root cmp key true nil nil (.-_storage set))]
+   (mp/let [set-root  (-root set)
+            new-roots (node-disj set-root cmp key true nil nil (.-_storage set))]
      (if (nil? new-roots) ;; nothing changed, key wasn't in the set
        set
        (let [new-root (arrays/aget new-roots 0)]
@@ -1435,15 +1436,15 @@
    `(rslice set from to)` returns backwards iterator for all Xs where from <= X <= to.
    Optionally pass in comparator that will override the one that set uses. Supports efficient [[clojure.core/rseq]]."
   ([^BTSet set key]
-   (p/let [s (-slice set key key (.-comparator set))]
+   (mp/let [s (-slice set key key (.-comparator set))]
      (when s
        (rseq s))))
   ([^BTSet set key-from key-to]
-   (p/let [s (-slice set key-to key-from (.-comparator set))]
+   (mp/let [s (-slice set key-to key-from (.-comparator set))]
      (when s
        (rseq s))))
   ([^BTSet set key-from key-to comparator]
-   (p/let [s (-slice set key-to key-from comparator)]
+   (mp/let [s (-slice set key-to key-from comparator)]
      (when s
        (rseq s)))))
 
