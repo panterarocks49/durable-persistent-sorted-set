@@ -3,6 +3,7 @@
   (:require
    [clojure.core :as c]
    [promesa.exec :as exec]
+   [promesa.protocols :as pt]
    [promesa.core :as p])
   #?(:cljs
      (:require-macros
@@ -15,15 +16,19 @@
 ;; intended to be used with an i/o operation with a cache
 ;; on cache hit, we take the sync (faster) route
 
+(defmacro promise? [v]
+  ;; TODO: should I use / check for regular js promises?
+  `(satisfies? pt/IPromise ~v))
+
 (defn all
   [coll]
-  (if (some p/promise? coll)
+  (if (some #(me.tonsky.maybe-promise/promise? %) coll)
     (p/all coll)
     coll))
 
 (defn then
   [p f]
-  (if (p/promise? p)
+  (if (me.tonsky.maybe-promise/promise? p)
     (p/then p f)
     (f p)))
 
@@ -96,7 +101,7 @@
     `(p/create
       (fn [~rsv-s ~rej-s]
         (c/let [~tsym (fn ~tsym [~@names]
-                        (if (some p/promise? [~@names])
+                        (if (some #(promise? %) [~@names])
                           (->> (p/let [~@(mapcat (fn [nsym] [nsym nsym]) names)]
                                  ~body)
                                ~inner)
@@ -105,7 +110,7 @@
                                           (catch ~err-s
                                               (~rej-s ~err-s)))]
                             (cond
-                              (p/promise? ~res-s)
+                              (promise? ~res-s)
                               (->> ~res-s
                                    ~inner)
                               (recur? ~res-s)
@@ -139,13 +144,13 @@
                        ~body)
                       ~res-s)))]
     `(c/loop ~bindings
-       (if (some p/promise? [~@names])
+       (if (some #(promise? %) [~@names])
          (-> (p/let [~@(mapcat (fn [nsym] [nsym nsym]) names)]
                ~body)
              ~inner)
          (c/let [~res-s ~body]
            (cond
-             (p/promise? ~res-s)
+             (promise? ~res-s)
              (-> ~res-s
                  ~inner)
              (recur? ~res-s)
