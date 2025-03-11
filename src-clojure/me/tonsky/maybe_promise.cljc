@@ -34,10 +34,11 @@
   because it's faster to not await if you don't have too"
   {:style/indent 1}
   [bindings & body]
-  (c/let [[n v & more] bindings]
-    `(c/let [~n ~v]
+  (c/let [[n v & more] bindings
+          nsym         (gensym "n-")]
+    `(c/let [~nsym ~v]
        (then
-        ~n
+        ~nsym
         (fn [~n]
           ~(if (seq more)
              `(let ~more ~@body)
