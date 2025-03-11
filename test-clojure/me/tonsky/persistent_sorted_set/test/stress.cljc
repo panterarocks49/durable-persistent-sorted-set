@@ -36,7 +36,7 @@
           (testing "conj, seq"
             (is (= (vec set0) xs-sorted)))
           (testing "eq"
-            (is (= set0 (set xs-sorted)) xs-sorted))
+            (is (= set0 (set xs-sorted)) #_xs-sorted))
           (testing "count"
             (is (= (count set0) (count xs-sorted))))
           (testing "doseq"

@@ -1295,7 +1295,11 @@
           (mp/let [leaves     (get-leaves set path till-path)
                    first-leaf (first leaves)]
             (when first-leaf
-              (Iter. (.-keys first-leaf) first-leaf (next leaves) (path-get path 0) (path-get till-path 0)))))))))
+              (let [end-idx (path-get till-path 0)
+                    end-idx (if (== 0 end-idx)
+                              (arrays/alength (.-keys (last leaves)))
+                              end-idx)]
+                (Iter. (.-keys first-leaf) first-leaf (next leaves) (path-get path 0) end-idx)))))))))
 
 (defn- arr-map-inplace [f arr]
   (let [len (arrays/alength arr)]
