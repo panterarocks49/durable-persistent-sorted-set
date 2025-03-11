@@ -5,7 +5,7 @@
    [me.tonsky.persistent-sorted-set.test.storage-async :as storage]
    [clojure.test :as t :refer [is are async deftest testing]])
   (:require-macros
-   [me.tonsky.persistent-sorted-set.test.macros :refer [deftest-async]]))
+   [me.tonsky.persistent-sorted-set.test.macros]))
 
 (def iters 100)
 
