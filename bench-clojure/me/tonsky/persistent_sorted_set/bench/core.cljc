@@ -1,6 +1,8 @@
 (ns me.tonsky.persistent-sorted-set.bench.core
+  (:require
+   [promesa.core :as p])
   #?(:cljs
-      (:require-macros me.tonsky.persistent-sorted-set.bench.core)))
+     (:require-macros me.tonsky.persistent-sorted-set.bench.core)))
 
 ; Measure time
 
@@ -52,16 +54,58 @@
     s))
 
 #?(:clj
-    (defmacro bench
-      "Runs for *wramup-ms* + *bench-ms*, returns median time (ms) per iteration"
-      [& body]
-      (if-cljs &env
-        `(let [_#     (dotime *warmup-ms* ~@body)
-               times# (mapv
-                        (fn [_#]
-                          (dotime *bench-ms* ~@body))
+   (defmacro bench
+     "Runs for *wramup-ms* + *bench-ms*, returns median time (ms) per iteration"
+     [& body]
+     (if-cljs &env
+       `(let [_#     (dotime *warmup-ms* ~@body)
+              times# (mapv
+                      (fn [_#]
+                        (dotime *bench-ms* ~@body))
+                      (range *samples*))]
+          {:mean-ms (median times#)})
+       `(let [results#     (criterium.core/quick-benchmark (do ~@body) {})
+              [mean# & _#] (:mean results#)]
+          {:mean-ms (* mean# 1000.0)}))))
+
+#?(:clj
+   (defmacro dotime-async
+     "Runs form duration, returns average time (ms) per iteration"
+     [duration & body]
+     `(let [start-t# (now)
+            end-t#   (+ ~duration start-t#)
+            b#       (vec (range *batch*))]
+        (p/loop [iterations# *batch*]
+          (p/do!
+           (p/doseq [_# b#] ~@body)
+           (let [now# (now)]
+             (if (< now# end-t#)
+               (p/recur (+ *batch* iterations#))
+               (double (/ (- now# start-t#) iterations#)))))))))
+
+(defn async-reduce
+  "Like reduce but `f` can return a promise"
+  [f acc coll]
+  (reduce
+   (fn [acc v]
+     (p/then
+      acc
+      (fn [acc]
+        (f acc v))))
+   acc
+   coll))
+
+#?(:clj
+   (defmacro bench-async
+     "Runs for *wramup-ms* + *bench-ms*, returns median time (ms) per iteration"
+     [& body]
+     (if-cljs &env
+       `(p/let [_#     (dotime-async *warmup-ms* ~@body)
+                times# (async-reduce
+                        (fn [acc# _#]
+                          (p/let [res# (dotime-async *bench-ms* ~@body)]
+                            (conj acc# res#)))
+                        []
                         (range *samples*))]
-           {:mean-ms (median times#)})
-        `(let [results#     (criterium.core/quick-benchmark (do ~@body) {})
-               [mean# & _#] (:mean results#)]
-           {:mean-ms (* mean# 1000.0)}))))
+          {:mean-ms (median times#)})
+       `(do))))
