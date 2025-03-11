@@ -550,7 +550,7 @@
     (prn "time" (- (.now js/performance) t))
     (-persistent! ret)))
 
-(declare conj disj btset-async-iter)
+(declare conj disj btset-async-iter -slice rslice)
 
 (def ^:private ^:const uninitialized-hash nil)
 (def ^:private ^:const uninitialized-address nil)
@@ -633,26 +633,26 @@
 
   ISeqable
   (-seq [this]
-    (p/let [iter (btset-async-iter this)]
-      (async-iter->vec iter)))
+    ;; this is mostly done for tests, maybe change later
+    ;; not sure if it's reasonable for this to return a promise here
+    ;; probably not so I should remove
+    (-slice this nil nil comparator))
 
   IReduce
   (-reduce [this f]
-    (p/let [i (btset-async-iter this)]
+    (mp/let [i (seq this)]
       (if i
         (-reduce i f)
         (f))))
   (-reduce [this f start]
-    (p/let [i (btset-async-iter this)]
+    (mp/let [i (seq this)]
       (if i
         (-reduce i f start)
         start)))
 
   IReversible
   (-rseq [this]
-    (p/let [iter (btset-async-iter this)
-            riter (rseq iter)]
-      (async-iter->vec riter)))
+    (rslice this nil nil comparator))
 
   ;; ISorted
   ;; (-sorted-seq [this ascending?])
@@ -679,13 +679,13 @@
 
   IPrintWithWriter
   (-pr-writer [this writer opts]
-    (pr-sequential-writer writer pr-writer "#{" " " "}" opts '("BTSet") #_(seq this))))
+    (pr-sequential-writer writer pr-writer "#{" " " "}" opts #_("BTSet") (seq this))))
 
 (defn- keys-for [set path]
-  (p/loop [level (.-shift set)
-           node  (-root set)]
+  (mp/loop [level (.-shift set)
+            node  (-root set)]
     (if (pos? level)
-      (p/recur
+      (mp/recur
        (dec level)
        (node-child node (path-get path level) (.-_storage set)))
       (.-keys node))))
@@ -700,8 +700,8 @@
   (let [idx (path-get path level)]
     (if (pos? level)
       ;; inner node
-      (p/let [child    (node-child node idx (.-_storage set))
-              sub-path (-next-path set child path (dec level))]
+      (mp/let [child    (node-child node idx (.-_storage set))
+               sub-path (-next-path set child path (dec level))]
         (if (nil? sub-path)
           ;; nested node overflow
           (if (< (inc idx) (arrays/alength (.-pointers node)))
@@ -721,13 +721,13 @@
 (defn- -rpath
   "Returns rightmost path possible starting from node and going deeper"
   [set node ^number path ^number level]
-  (p/loop [node  node
-           path  path
-           level level]
+  (mp/loop [node  node
+            path  path
+            level level]
     (if (pos? level)
       ;; inner node
       (let [end-idx (dec (arrays/alength (.-pointers node)))]
-        (p/recur
+        (mp/recur
          (node-child node end-idx (.-_storage set))
          (path-set path level end-idx)
          (dec level)))
@@ -740,11 +740,11 @@
   [set ^number path]
   (if (neg? path)
     empty-path
-    (p/let [root (-root set)
-            np   (-next-path set root path (.-shift set))]
+    (mp/let [root (-root set)
+             np   (-next-path set root path (.-shift set))]
       (if np
         np
-        (p/let [rp (-rpath set root empty-path (.-shift set))]
+        (mp/let [rp (-rpath set root empty-path (.-shift set))]
           (path-inc rp))))))
 
 (defn- -prev-path [set node ^number path ^number level]
@@ -763,8 +763,8 @@
       (-rpath set node path level)
 
       :else
-      (p/let [child (node-child node idx (.-_storage set))
-              path' (-prev-path set child path (dec level))]
+      (mp/let [child (node-child node idx (.-_storage set))
+               path' (-prev-path set child path (dec level))]
         (cond
           ;; no sub-overflow, keep current idx
           (some? path')
@@ -784,10 +784,10 @@
   "Returns path representing previous item before `path` in natural traversal order.
    Will overflow at leaf if at beginning of tree"
   [set ^number path]
-  (p/let [root (-root set)]
+  (mp/let [root (-root set)]
     (if (> (path-get path (inc (.-shift set))) 0) ;; overflow
       (-rpath set root path (.-shift set))
-      (p/let [pp (-prev-path set root path (.-shift set))]
+      (mp/let [pp (-prev-path set root path (.-shift set))]
         (if pp
           pp
           (path-dec empty-path))))))
@@ -947,7 +947,7 @@
     (let [leaves     (-> '()
                          (clojure.core/conj cur-leaf)
                          (into rev-leaves))
-          first-leaf (first rev-leaves)]
+          first-leaf (first leaves)]
       (Iter. (.-keys first-leaf) first-leaf (next leaves) (inc end-idx) (inc idx))))
 
   ;; ISeek
