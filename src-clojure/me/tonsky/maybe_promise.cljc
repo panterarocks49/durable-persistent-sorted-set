@@ -16,19 +16,15 @@
 ;; intended to be used with an i/o operation with a cache
 ;; on cache hit, we take the sync (faster) route
 
-(defmacro promise? [v]
-  ;; TODO: should I use / check for regular js promises?
-  `(satisfies? pt/IPromise ~v))
-
 (defn all
   [coll]
-  (if (some #(me.tonsky.maybe-promise/promise? %) coll)
+  (if (some p/promise? coll)
     (p/all coll)
     coll))
 
 (defn then
   [p f]
-  (if (me.tonsky.maybe-promise/promise? p)
+  (if (p/promise? p)
     (p/then p f)
     (f p)))
 
@@ -85,34 +81,35 @@
           err-s (gensym "err-")
           rej-s (gensym "reject-fn-")
           rsv-s (gensym "resolve-fn-")
-          inner `(p/fnly
-                  (fn [~res-s ~err-s]
-                    (if (some? ~err-s)
-                      (~rej-s ~err-s)
-                      (if (recur? ~res-s)
-                        (do
-                          (exec/run!
-                           :vthread
-                           ~(if (seq names)
-                              `(fn [] (apply ~tsym (:bindings ~res-s)))
-                              tsym))
-                          nil)
-                        (~rsv-s ~res-s)))))]
+          inner `(p/finally
+                   (fn [~res-s ~err-s]
+                     (if (some? ~err-s)
+                       (~rej-s ~err-s)
+                       (if (recur? ~res-s)
+                         (do
+                           (exec/run!
+                            ;; vthread wasn't available in older promesa
+                            exec/default-executor
+                            ~(if (seq names)
+                               `(fn [] (apply ~tsym (:bindings ~res-s)))
+                               tsym))
+                           nil)
+                         (~rsv-s ~res-s)))))]
     `(p/create
       (fn [~rsv-s ~rej-s]
         (c/let [~tsym (fn ~tsym [~@names]
-                        (if (some #(promise? %) [~@names])
-                          (->> (p/let [~@(mapcat (fn [nsym] [nsym nsym]) names)]
-                                 ~body)
-                               ~inner)
+                        (if (some p/promise? [~@names])
+                          (-> (p/let [~@(mapcat (fn [nsym] [nsym nsym]) names)]
+                                ~body)
+                              ~inner)
                           (c/let [~res-s (try-catchall
                                           ~body
                                           (catch ~err-s
                                               (~rej-s ~err-s)))]
                             (cond
-                              (promise? ~res-s)
-                              (->> ~res-s
-                                   ~inner)
+                              (p/promise? ~res-s)
+                              (-> ~res-s
+                                  ~inner)
                               (recur? ~res-s)
                               (recur ~@(map (fn [n]
                                               `(nth (:bindings ~res-s) ~n))
@@ -120,7 +117,7 @@
                               :else
                               (~rsv-s ~res-s)))))]
           (exec/run!
-           :vthread
+           exec/default-executor
            ~(if (seq names)
               `(fn [] (~tsym ~@fvals))
               tsym)))))))
@@ -144,13 +141,13 @@
                        ~body)
                       ~res-s)))]
     `(c/loop ~bindings
-       (if (some #(promise? %) [~@names])
+       (if (some p/promise? [~@names])
          (-> (p/let [~@(mapcat (fn [nsym] [nsym nsym]) names)]
                ~body)
              ~inner)
          (c/let [~res-s ~body]
            (cond
-             (promise? ~res-s)
+             (p/promise? ~res-s)
              (-> ~res-s
                  ~inner)
              (recur? ~res-s)
