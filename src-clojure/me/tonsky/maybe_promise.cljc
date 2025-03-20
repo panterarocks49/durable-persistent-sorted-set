@@ -2,7 +2,7 @@
   (:refer-clojure
    :exclude
    [loop recur let reduce reduce-kv
-    mapv filterv every?])
+    mapv filterv every? locking])
   (:require
    [clojure.core :as c]
    [promesa.exec :as exec]
@@ -18,6 +18,23 @@
 ;; intended to be used with an i/o operation with a cache
 ;; on cache hit, we take the sync (faster) route
 
+(defn cljs-env?
+  "Take the &env from a macro, and tell whether we are expanding into cljs."
+  [env]
+  (boolean (:ns env)))
+
+(defmacro try-catchall
+  "A cross-platform variant of try-catch that catches all exceptions.
+   Does not (yet) support finally, and does not need or want an exception class."
+  [& body]
+  (c/let [try-body (butlast body)
+          [catch sym & catch-body] (last body)]
+    (assert (= catch 'catch))
+    (assert (symbol? sym))
+    (if (cljs-env? &env)
+      `(try ~@try-body (~'catch js/Object ~sym ~@catch-body))
+      `(try ~@try-body (~'catch Throwable ~sym ~@catch-body)))))
+
 (defn all
   [coll]
   (if (some p/promise? coll)
@@ -29,6 +46,12 @@
   (if (p/promise? p)
     (p/then p f)
     (f p)))
+
+;; tricky because I'm not exactly sure what it should do in sync
+;; and how the name conflicts..
+;; ;; TODO: catch
+;; (defn catch
+;;   [])
 
 ;; can't figure out how to override do so it's named do!
 (defmacro do!
@@ -57,23 +80,6 @@
           ~(if (seq more)
              `(let ~more ~@body)
              `(do! ~@body)))))))
-
-(defn cljs-env?
-  "Take the &env from a macro, and tell whether we are expanding into cljs."
-  [env]
-  (boolean (:ns env)))
-
-(defmacro try-catchall
-  "A cross-platform variant of try-catch that catches all exceptions.
-   Does not (yet) support finally, and does not need or want an exception class."
-  [& body]
-  (c/let [try-body (butlast body)
-          [catch sym & catch-body] (last body)]
-    (assert (= catch 'catch))
-    (assert (symbol? sym))
-    (if (cljs-env? &env)
-      `(try ~@try-body (~'catch js/Object ~sym ~@catch-body))
-      `(try ~@try-body (~'catch Throwable ~sym ~@catch-body)))))
 
 (defrecord Recur [bindings])
 
@@ -237,3 +243,77 @@
                     false))))
       true)))
 
+;; An atom mapping each lock to its promise chain.
+(def *locks (atom {}))
+
+(defn async-lock*
+  "Takes a lock and a thunk (a no-arg function that returns a promise).
+   The thunk is chained onto the lock’s promise chain so that
+   calls using the same lock run sequentially. Returns a promise
+   that resolves with the thunk’s result."
+  [lock thunk]
+  (c/let [locks (swap!
+                 *locks
+                 update
+                 lock
+                 (fn [prev]
+                   (c/let [maybe-p (then prev (fn [] (thunk)))]
+                     (if (p/promise? maybe-p)
+                       (p/catch maybe-p (fn [err] {:error err}))
+                       maybe-p))))
+          res    (get locks lock)
+          release-lock!
+          (fn release-lock! []
+            (swap! *locks
+                   (fn [locks]
+                     ;; if this lock is the same, release it
+                     (if (= (get locks lock) res)
+                       (dissoc locks lock)
+                       locks))))]
+    (if (p/promise? res)
+      (-> res
+          (p/then (fn [maybe-err]
+                    (if (:error maybe-err)
+                      (throw (:error maybe-err))
+                      maybe-err)))
+          (p/finally release-lock!))
+      (do
+        (release-lock!)
+        res))))
+
+;; no idea if this works in clojure with multithreads
+;; TODO: should this compare by identical? or is the atom good enough
+(defmacro locking
+  "Mimics Clojure's locking macro for async code.
+   Usage:
+     (async-locking some-lock
+       ;; critical section code returning a promise
+       ...)"
+  [lock & body]
+  `(async-lock* ~lock (fn [] ~@body)))
+
+(comment
+  (def a (atom nil))
+
+  (-> (async-lock* a (fn [] (p/do!
+                             (p/delay 10000)
+                             (prn "hey")
+                             (throw "oops"))))
+      (p/catch (fn [err]
+                 (prn "1 errored"))))
+
+  (-> (async-lock* a (fn [] (prn "hey2") 1 #_(p/do!
+                                              (p/delay 1000)
+                                              (prn "hey2")
+                                              1)))
+      (p/then (fn [res]
+                (prn res))))
+
+  @*locks
+
+  )
+
+;; KEEP AT THE BOTTOM OF THE FILE TO NOT OVERWRITE CLOJURE'S DO
+(defmacro do
+  [& body]
+  `(do! ~@body))
