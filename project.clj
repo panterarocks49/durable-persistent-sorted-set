@@ -5,7 +5,9 @@
   
   :dependencies
   [[org.clojure/clojure       "1.11.1"  :scope "provided"]
-   [org.clojure/clojurescript "1.11.60" :scope "provided"]]
+   [org.clojure/clojurescript "1.11.60" :scope "provided"]
+   [funcool/promesa "11.0.678"]
+   ]
   
   :plugins
   [[lein-cljsbuild "1.1.7"]]
@@ -22,7 +24,7 @@
    {:dependencies 
     [[org.clojure/clojure       "1.9.0"   :scope "provided"]
      [org.clojure/clojurescript "1.9.946" :scope "provided"]]}}
-   
+  
   :deploy-repositories
   {"clojars"
    {:url "https://clojars.org/repo"
