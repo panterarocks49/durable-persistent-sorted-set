@@ -343,36 +343,36 @@
 (deftype Node [keys pointers ^:mutable _addresses]
   INodeStore
   (-store [this storage]
-    (p/let [len (arrays/alength pointers)]
+    (mp/let [len (arrays/alength pointers)]
       (ensure-addresses! this len)
-      (p/loop [idx 0]
+      (mp/loop [idx 0]
         (when (< idx len)
-          (p/do!
-           (let [address (arrays/aget _addresses idx)]
-             (when (nil? address)
-               ;; in practice we shouldn't have to read reference but just in case
-               (p/let [child-node (read-reference (arrays/aget pointers idx))
-                       _ (assert (not (nil? child-node)))
-                       address (-store child-node storage)]
-                 (when address
-                   (arrays/aset _addresses idx address)
-                   (arrays/aset pointers idx (make-reference child-node))))))
-           (p/recur (inc idx)))))
+          (mp/do
+            (let [address (arrays/aget _addresses idx)]
+              (when (nil? address)
+                ;; in practice we shouldn't have to read reference but just in case
+                (mp/let [child-node (read-reference (arrays/aget pointers idx))
+                         _ (assert (not (nil? child-node)))
+                         address (-store child-node storage)]
+                  (when address
+                    (arrays/aset _addresses idx address)
+                    (arrays/aset pointers idx (make-reference child-node))))))
+            (mp/recur (inc idx)))))
       (storage/store storage this)))
 
   (-walk-addresses [this storage on-address]
-    (p/let [len (arrays/alength pointers)]
+    (mp/let [len (arrays/alength pointers)]
       (ensure-addresses! this len)
-      (p/loop [idx 0]
+      (mp/loop [idx 0]
         (when (< idx len)
-          (p/do!
-           (p/let [address    (arrays/aget _addresses idx)
-                   child-node (node-child this idx storage)]
-             (if address
-               (when (on-address address)
-                 (-walk-addresses child-node storage on-address))
-               (-walk-addresses child-node storage on-address)))
-           (p/recur (inc idx)))))))
+          (mp/do
+            (mp/let [address    (arrays/aget _addresses idx)
+                     child-node (node-child this idx storage)]
+              (if address
+                (when (on-address address)
+                  (-walk-addresses child-node storage on-address))
+                (-walk-addresses child-node storage on-address)))
+            (mp/recur (inc idx)))))))
 
   INode
   (node-lim-key [_]
@@ -605,19 +605,19 @@
 
   INodeStore
   (-store [this]
-    (p/do!
-     (assert (some? _storage) "Can't store without a storage")
-     (when (nil? _address)
-       (p/let [root    (-root this)
-               address (-store root _storage)]
-         (set! _address address)))
-     _address))
+    (mp/do
+      (assert (some? _storage) "Can't store without a storage")
+      (when (nil? _address)
+        (mp/let [root    (-root this)
+                 address (-store root _storage)]
+          (set! _address address)))
+      _address))
   (-store [this storage]
     (set! _storage storage)
     (-store this))
 
   (-walk-addresses [this on-address]
-    (p/let [root (-root this)]
+    (mp/let [root (-root this)]
       (if _address
         (when (on-address _address)
           (-walk-addresses root _storage on-address))
@@ -776,8 +776,8 @@
 
           ;; nested overflow, advance current idx, reset subsequent indexes
           :else
-          (p/let [pchild (node-child node (dec idx) (.-_storage set))
-                  path'  (-rpath set pchild path (dec level))]
+          (mp/let [pchild (node-child node (dec idx) (.-_storage set))
+                   path'  (-rpath set pchild path (dec level))]
             (path-set path' level (dec idx))))))))
 
 (defn- prev-path
