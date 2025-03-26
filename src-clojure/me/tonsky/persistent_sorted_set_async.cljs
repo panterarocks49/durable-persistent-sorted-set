@@ -332,7 +332,7 @@
   (-make-ref [this node])
   (-read-ref [this node]))
 
-(defrecord Settings [make-reference read-reference]
+(defrecord Settings [make-reference read-reference store-group-size]
   IReference
   (-make-ref [_ node]
     (make-reference node))
@@ -340,16 +340,18 @@
     (read-reference node)))
 
 (defn map->settings
-  [{:keys [make-reference read-reference]}]
+  [{:keys [make-reference read-reference store-group-size]}]
   (Settings.
    (or make-reference default-make-reference)
-   (or read-reference default-read-reference)))
+   (or read-reference default-read-reference)
+   (or store-group-size 1)))
 
 (defn settings->map
   [settings]
   {:branching-factor max-len
    :make-reference   (:make-reference settings)
-   :read-reference   (:read-reference settings)})
+   :read-reference   (:read-reference settings)
+   :store-group-size (:store-group-size settings)})
 
 (defn- ensure-addresses!
   [^Node node size]
@@ -365,23 +367,38 @@
 
 (deftype Node [keys pointers ^:mutable _addresses]
   INodeStore
+  ;; every node stores all of it's children, but not itself
+  ;; it first calls store on the children, so lower levels store first
   (-store [this storage ^Settings settings]
-    (mp/let [len (arrays/alength pointers)]
-      (ensure-addresses! this len)
-      (mp/loop [idx 0]
-        (when (< idx len)
-          (mp/do
-            (let [address (arrays/aget _addresses idx)]
-              (when (nil? address)
-                ;; in practice we shouldn't have to read reference but just in case
-                (mp/let [child-node (-read-ref settings (arrays/aget pointers idx))
-                         _ (assert (not (nil? child-node)))
-                         address (-store child-node storage settings)]
-                  (when address
-                    (arrays/aset _addresses idx address)
-                    (arrays/aset pointers idx (-make-ref settings child-node))))))
-            (mp/recur (inc idx)))))
-      (storage/store storage this)))
+    (let [len        (arrays/alength pointers)
+          _          (ensure-addresses! this len)
+          group-size (:store-group-size settings)]
+      (mp/loop [grouped-addrs (->> (vec _addresses)
+                                   (map-indexed vector)
+                                   (partition-all group-size))]
+        (when (seq grouped-addrs)
+          (mp/let [addrs (first grouped-addrs)]
+            (when (some #(nil? (second %)) addrs)
+              (mp/let [children
+                       (mp/mapv
+                        (fn [[idx addr]]
+                          ;; we might read in the middle of writing
+                          ;; because we could be resaving
+                          (mp/let [child (node-child this idx storage settings)
+                                   ;; store the lower level first
+                                   _ (when (nil? addr)
+                                       (-store child storage settings))]
+                            [addr child]))
+                        addrs)
+                       stored-addrs (storage/store storage children)]
+                (assert (and (= (count children) (count stored-addrs))
+                             (every? some? stored-addrs)))
+                (doseq [[[idx _] address] (map vector addrs stored-addrs)]
+                  (let [child (node-child this idx storage settings)]
+                    (when address
+                      (arrays/aset _addresses idx address)
+                      (arrays/aset pointers idx (-make-ref settings child)))))))
+            (mp/recur (rest grouped-addrs)))))))
 
   (-walk-addresses [this storage settings on-address]
     (mp/let [len (arrays/alength pointers)]
@@ -426,6 +443,7 @@
 
   (node-child [_this idx ^storage/IStorage storage settings]
     ;; TODO: Remove when the implementation is stable
+    #_#_
     (assert (and (<= 0 idx)
                  (< idx (arrays/alength pointers))))
     (assert (or (and pointers (arrays/aget pointers idx))
@@ -498,8 +516,8 @@
 
 (deftype Leaf [keys]
   INodeStore
-  (-store [this storage _]
-    (storage/store storage this))
+  ;; noop because nodes store their children
+  (-store [_ _ _])
 
   ;; noop on leaf
   (-walk-addresses [_ _ _ _])
@@ -631,9 +649,10 @@
     (mp/do
       (assert (some? _storage) "Can't store without a storage")
       (when (nil? _address)
-        (mp/let [root    (-root this)
-                 address (-store root _storage _settings)]
-          (set! _address address)))
+        (mp/let [root  (-root this)
+                 _     (-store root _storage _settings)
+                 addrs (storage/store _storage [[nil root]])]
+          (set! _address (first addrs))))
       _address))
   (-store [this storage _]
     (set! _storage storage)

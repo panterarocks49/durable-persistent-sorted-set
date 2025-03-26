@@ -1,9 +1,9 @@
 (ns me.tonsky.persistent-sorted-set.bench-async
   (:require
    [promesa.core :as p]
-   [me.tonsky.persistent-sorted-set :as set]
+   [me.tonsky.persistent-sorted-set-async :as set]
    [me.tonsky.persistent-sorted-set.bench.core :as bench.core]
-   [me.tonsky.persistent-sorted-set.test.storage :as storage]))
+   [me.tonsky.persistent-sorted-set.test.storage-async :as storage]))
 
 (def ints-10K
   (vec (shuffle (range 10000))))

@@ -24,14 +24,18 @@
 
 (defrecord Storage [*memory *disk]
   IStorage
-  (store [_ node]
-    (swap! *stats update :writes inc)
-    (let [address (gen-addr)]
-      (swap! *disk assoc address
-             {:keys      (vec (.-keys node))
-              :addresses (when (instance? set/Node node)
-                           (vec (.-_addresses node)))})
-      address))
+  (store [_ nodes]
+    (mapv
+     (fn [[_ node]]
+       (swap! *stats update :writes inc)
+       (let [address (gen-addr)]
+         (swap! *disk assoc address
+                {:keys      (vec (.-keys node))
+                 :addresses (when (instance? set/Node node)
+                              (vec (.-_addresses node)))})
+         address)
+       )
+     nodes))
   (accessed [_ _address]
     (swap! *stats update :accessed inc)
     nil)
@@ -63,26 +67,27 @@
 
 (defn loaded-ratio
   ([^set/BTSet set]
-   (let [storage (.-_storage set)
-         address (.-_address set)
-         root    (set/-root set)]
-     (loaded-ratio (some-> storage :*memory deref) address root)))
-  ([memory address node]
+   (let [storage  (.-_storage set)
+         address  (.-_address set)
+         settings (.-_settings set)
+         root     (set/-root set)]
+     (loaded-ratio settings (some-> storage :*memory deref) address root)))
+  ([settings memory address node]
    (when *debug*
      (println address (contains? memory address) node (memory address)))
    (if (and address (not (contains? memory address)))
      0.0
-     (let [node (set/read-reference node)
+     (let [node (set/-read-ref settings node)
            node (or node (memory address))]
        (if (instance? set/Leaf node)
          1.0
-         (let [node ^set/Node node
+         (let [node     ^set/Node node
                children (.-pointers node)
                len      (count children)]
            (double
             (/ (->> (mapv
                      (fn [_ child-addr child]
-                       (loaded-ratio memory child-addr child))
+                       (loaded-ratio settings memory child-addr child))
                      (range len)
                      (or (.-_addresses node) (repeat len nil))
                      (or children (repeat len nil)))
@@ -91,23 +96,24 @@
 
 (defn durable-ratio
   ([^set/BTSet set]
-   (double (durable-ratio (.-_address set) (set/-root set))))
-  ([address node]
-   (cond
-     (some? address)           1.0
-     (instance? set/Leaf node) 0.0
-     :else
-     (let [node     ^set/Node node
-           children (.-pointers node)
-           len      (count children)]
-       (/ (->> (map
-                (fn [_ child-addr child]
-                  (durable-ratio child-addr child))
-                (range len)
-                (.-_addresses node)
-                children)
-               (reduce + 0))
-          len)))))
+   (double (durable-ratio (.-_settings set) (.-_address set) (set/-root set))))
+  ([settings address node]
+   (let [node (set/-read-ref settings node)]
+     (cond
+       (some? address)           1.0
+       (instance? set/Leaf node) 0.0
+       :else
+       (let [node     ^set/Node node
+             children (.-pointers node)
+             len      (count children)]
+         (/ (->> (map
+                  (fn [_ child-addr child]
+                    (durable-ratio settings child-addr child))
+                  (range len)
+                  (.-_addresses node)
+                  children)
+                 (reduce + 0))
+            len))))))
 
 (deftest test-lazy-remove
   "Check that invalidating middle branch does not invalidates siblings"
@@ -154,16 +160,17 @@
                 storage   (storage *disk)
                 invariant (fn invariant
                             ([^set/BTSet o]
-                             (p/let [root (set/-root o)]
-                               (invariant root (some? (.-_address o)))))
-                            ([o stored?]
+                             (p/let [settings (.-_settings o)
+                                     root (set/-root o)]
+                               (invariant settings root (some? (.-_address o)))))
+                            ([settings o stored?]
                              (condp instance? o
                                set/Node
                                (p/let [node ^set/Node o
                                        len  (arrays/alength (.-pointers node))]
                                  (p/doseq [i (range len)]
                                    (p/let [addr   (nth (.-_addresses node) i)
-                                           child  (set/node-child node (int i) storage)
+                                           child  (set/node-child node (int i) storage settings)
                                            {:keys [keys addresses]} (edn/read-string (@*disk addr))]
                                      ;; nodes inside stored? has to ALL be stored
                                      (when stored?
@@ -173,7 +180,7 @@
                                        (is (= addresses
                                               (when (instance? set/Node child)
                                                 (vec (.-_addresses child))))))
-                                     (invariant child (some? addr)))))
+                                     (invariant settings child (some? addr)))))
                                set/Leaf
                                true)))]
           (testing "Persist after each"
