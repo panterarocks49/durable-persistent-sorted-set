@@ -4,6 +4,7 @@
    [loop recur let reduce reduce-kv
     mapv filterv every? locking])
   (:require
+   [me.tonsky.persistent-sorted-set.arrays :as arrays]
    [clojure.core :as c]
    [promesa.exec :as exec]
    [promesa.core :as p])
@@ -71,85 +72,93 @@
             (rest body)))))
 
 (defmacro let
-"If a value in the let binding is a promise, then await on the promise
+  "If a value in the let binding is a promise, then await on the promise
   otherwise don't wait and don't return a promise
   In the best case, the code will run sync. Useful if you may or may not have a promise
   because it's faster to not await if you don't have too
   Body is run with `do!` and may contain promises as well"
-{:style/indent 1}
-[bindings & body]
-(c/let [[n v & more] bindings
-        nsym         (gensym "n-")]
-  `(c/let [~nsym ~v]
-     (then
-      ~nsym
-      (fn [~n]
-        ~(if (seq more)
-           `(let ~more ~@body)
-           `(do! ~@body)))))))
+  {:style/indent 1}
+  [bindings & body]
+  (c/let [[n v & more] bindings
+          nsym         (gensym "n-")]
+    `(c/let [~nsym ~v]
+       (then
+        ~nsym
+        (fn [~n]
+          ~(if (seq more)
+             `(let ~more ~@body)
+             `(do! ~@body)))))))
 
-(defrecord Recur [bindings])
+#?(:clj  (deftype Recur [^objects bindings])
+   :cljs (deftype Recur [^js bindings]))
 
-(defn recur?
-[o]
-(instance? Recur o))
+(defn recur? [o]
+  (instance? Recur o))
 
-(defmacro recur
-[& args]
-`(->Recur [~@args]))
+(defmacro recur [& args]
+  `(Recur. (arrays/array ~@args)))
+
+(defmacro recur-bindings [r]
+  `(.-bindings ~(vary-meta r assoc :tag 'me.tonsky.maybe_promise.Recur)))
 
 (defmacro aloop*
-[bindings body]
-(c/let [binds (partition 2 2 bindings)
-        names (map first binds)
-        fvals (map second binds)
-        tsym  (gensym "loop-fn-")
-        res-s (gensym "res-")
-        err-s (gensym "err-")
-        rej-s (gensym "reject-fn-")
-        rsv-s (gensym "resolve-fn-")
-        inner `(p/finally
-                 (fn [~res-s ~err-s]
-                   (if (some? ~err-s)
-                     (~rej-s ~err-s)
-                     (if (recur? ~res-s)
-                       (do
-                         (exec/run!
-                          ;; vthread wasn't available in older promesa
-                          exec/default-executor
-                          ~(if (seq names)
-                             `(fn [] (apply ~tsym (:bindings ~res-s)))
-                             tsym))
-                         nil)
-                       (~rsv-s ~res-s)))))]
-  `(p/create
-    (fn [~rsv-s ~rej-s]
-      (c/let [~tsym (fn ~tsym [~@names]
-                      (if (some p/promise? [~@names])
-                        (-> (p/let [~@(mapcat (fn [nsym] [nsym nsym]) names)]
-                              ~body)
-                            ~inner)
-                        (c/let [~res-s (try-catchall
-                                        ~body
-                                        (catch ~err-s
-                                            (~rej-s ~err-s)))]
-                          (cond
-                            (p/promise? ~res-s)
-                            (-> ~res-s
-                                ~inner)
-                            (recur? ~res-s)
-                            ;; recur is weird, I think it's defined in fns and loop
-                            ;; and not globally
-                            (recur ~@(map (fn [n]
-                                            `(nth (:bindings ~res-s) ~n))
-                                          (range 0 (count names))))
-                            :else
-                            (~rsv-s ~res-s)))))]
-        (exec/run!
-         exec/default-executor
-         ~(if (seq names)
-            `(fn [] (~tsym ~@fvals))
-            tsym)))))))
+  [bindings body]
+  (c/let [binds (partition 2 2 bindings)
+          names (map first binds)
+          fvals (map second binds)
+          tsym  (gensym "loop-fn-")
+          res-s (gensym "res-")
+          err-s (gensym "err-")
+          rej-s (gensym "reject-fn-")
+          rsv-s (gensym "resolve-fn-")
+          bsym  (gensym "bindings-")
+          inner `(p/finally
+                   (fn [~res-s ~err-s]
+                     (if (some? ~err-s)
+                       (~rej-s ~err-s)
+                       (if (recur? ~res-s)
+                         (do
+                           (exec/run!
+                            ;; vthread wasn't available in older promesa
+                            exec/default-executor
+                            ~(if (seq names)
+                               `(fn []
+                                  (c/let [~bsym (recur-bindings ~res-s)]
+                                    (~tsym
+                                     ~@(map (fn [n]
+                                              `(arrays/aget ~bsym ~n))
+                                            (range (count names)))))
+                                  )
+                               tsym))
+                           nil)
+                         (~rsv-s ~res-s)))))]
+    `(p/create
+      (fn [~rsv-s ~rej-s]
+        (c/let [~tsym (fn ~tsym [~@names]
+                        (if (or ~@(for [n names] `(p/promise? ~n)))
+                          (-> (p/let [~@(mapcat (fn [nsym] [nsym nsym]) names)]
+                                ~body)
+                              ~inner)
+                          (c/let [~res-s (try-catchall
+                                          ~body
+                                          (catch ~err-s
+                                              (~rej-s ~err-s)))]
+                            (cond
+                              (recur? ~res-s)
+                              (c/let [~bsym (recur-bindings ~res-s)]
+                                (recur ~@(map (fn [n]
+                                                `(arrays/aget ~bsym ~n))
+                                              (range (count names)))))
+                              (p/promise? ~res-s)
+                              (-> ~res-s
+                                  ~inner)
+                              :else
+                              (~rsv-s ~res-s)))))]
+          (exec/run!
+           exec/default-executor
+           ~(if (seq names)
+              `(fn [] (~tsym ~@fvals))
+              tsym)))))))
 
 (defmacro loop
   "Loop/recur with support for resolving promises. It will conditionally be async depending on
@@ -159,15 +168,18 @@
   (c/let [binds (partition 2 2 bindings)
           names (map first binds)
           res-s (gensym "res-")
+          bsym  (gensym "bindings-")
           inner `(p/then
                   (fn [~res-s]
                     (if (recur? ~res-s)
-                      (aloop*
-                       [~@(->> names
-                               (map-indexed (fn [i nsym]
-                                              [nsym `(nth (:bindings ~res-s) ~i)]))
-                               (mapcat identity))]
-                       ~body)
+                      (c/let [~bsym (recur-bindings ~res-s)]
+                        (aloop*
+                         [~@(->> names
+                                 (map-indexed
+                                  (fn [i nsym]
+                                    [nsym `(arrays/aget ~bsym ~i)]))
+                                 (mapcat identity))]
+                         ~body))
                       ~res-s)))]
     `(c/loop ~bindings
        (if (or ~@(for [n names] `(p/promise? ~n)))
@@ -176,13 +188,14 @@
              ~inner)
          (c/let [~res-s ~body]
            (cond
+             (recur? ~res-s)
+             (c/let [~bsym (recur-bindings ~res-s)]
+               (recur ~@(map (fn [n]
+                               `(arrays/aget ~bsym ~n))
+                             (range (count names)))))
              (p/promise? ~res-s)
              (-> ~res-s
                  ~inner)
-             (recur? ~res-s)
-             (recur ~@(map (fn [n]
-                             `(nth (:bindings ~res-s) ~n))
-                           (range 0 (count names))))
              :else
              ~res-s))))))
 

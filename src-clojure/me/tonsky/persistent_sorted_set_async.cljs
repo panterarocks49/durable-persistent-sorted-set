@@ -54,6 +54,8 @@
   ;; 5
   ;; 8 is pretty good tradeoff in performance
   ;; but I think we want largest for storage
+  ;; 8
+  ;; #_
   10)
 
 (def ^:const max-len
