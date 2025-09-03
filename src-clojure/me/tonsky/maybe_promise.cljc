@@ -92,14 +92,23 @@
 #?(:clj  (deftype Recur [^objects bindings])
    :cljs (deftype Recur [^js bindings]))
 
-(defn recur? [o]
-  (instance? Recur o))
+(defmacro recur? [o]
+  `(instance? Recur ~o))
 
 (defmacro recur [& args]
   `(Recur. (arrays/array ~@args)))
 
 (defmacro recur-bindings [r]
   `(.-bindings ~(vary-meta r assoc :tag 'me.tonsky.maybe_promise.Recur)))
+
+;; microtask seems to be faster in cljs than promesa
+;; for some reason I don't need this bounce anymore
+;; not sure why it doesn't overflow anymore
+;; we used to have to do this
+;; it doesn't add a whole lot of time so I can add it back in later if I get stackoverflow
+;; #?(:cljs (defn bounce! [f] (f) #_(js/queueMicrotask f))
+;;    ;; vthread wasn't available in older promesa
+;;    :clj  (defn bounce! [f] (exec/run! exec/default-executor f)))
 
 (defmacro aloop*
   [bindings body]
@@ -118,18 +127,13 @@
                        (~rej-s ~err-s)
                        (if (recur? ~res-s)
                          (do
-                           (exec/run!
-                            ;; vthread wasn't available in older promesa
-                            exec/default-executor
-                            ~(if (seq names)
-                               `(fn []
-                                  (c/let [~bsym (recur-bindings ~res-s)]
-                                    (~tsym
-                                     ~@(map (fn [n]
-                                              `(arrays/aget ~bsym ~n))
-                                            (range (count names)))))
-                                  )
-                               tsym))
+                           ~(if (seq names)
+                              `(c/let [~bsym (recur-bindings ~res-s)]
+                                 (~tsym
+                                  ~@(map (fn [n]
+                                           `(arrays/aget ~bsym ~n))
+                                         (range (count names)))))
+                              (tsym))
                            nil)
                          (~rsv-s ~res-s)))))]
     `(p/create
@@ -154,11 +158,9 @@
                                   ~inner)
                               :else
                               (~rsv-s ~res-s)))))]
-          (exec/run!
-           exec/default-executor
-           ~(if (seq names)
-              `(fn [] (~tsym ~@fvals))
-              tsym)))))))
+          ~(if (seq names)
+             `(~tsym ~@fvals)
+             (tsym)))))))
 
 (defmacro loop
   "Loop/recur with support for resolving promises. It will conditionally be async depending on
