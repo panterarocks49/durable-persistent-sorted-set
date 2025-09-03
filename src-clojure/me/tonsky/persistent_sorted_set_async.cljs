@@ -856,6 +856,108 @@
 
 (declare -seek* -rseek* ReverseIter)
 
+;; likely faster but haven't had the time to flush out
+#_
+(deftype Iter2 [^js arr arr-len leaves-idx leaves-len leaves idx end-idx]
+  IEquiv
+  #_:clj-kondo/ignore
+  (-equiv [this other] (equiv-sequential this other))
+
+  ISequential
+  ISeqable
+  (-seq [this] this)
+
+  ISeq
+  (-first [_]
+    (arrays/aget arr idx))
+
+  (-rest [this]
+    (or (-next this) '()))
+
+  INext
+  (-next [_]
+    (let [inc-idx         (inc idx)
+          next-leaves-idx (inc leaves-idx)]
+      (if (< next-leaves-idx leaves-len)
+        (if (< inc-idx arr-len)
+          (Iter2. arr arr-len leaves-idx leaves-len leaves inc-idx end-idx)
+          (let [next-leaf (arrays/aget leaves next-leaves-idx)
+                keys (.-keys next-leaf)]
+            (Iter2. keys (arrays/alength keys) next-leaves-idx leaves-len leaves 0 end-idx)))
+        (when (< inc-idx end-idx)
+          (Iter2. arr arr-len leaves-idx leaves-len leaves inc-idx end-idx)))))
+
+  ;; IChunkedSeq
+  ;; (-chunked-first [_]
+  ;;   (let [next-leaf (arrays/aget leaves (inc leaves-idx))
+  ;;         end-idx   (if next-leaf
+  ;;                     (arrays/alength arr)
+  ;;                     end-idx)]
+  ;;     (Chunk. arr idx end-idx)))
+
+  ;; (-chunked-rest [this]
+  ;;   (or (-chunked-next this) ()))
+
+  ;; IChunkedNext
+  ;; (-chunked-next [_]
+  ;;   (let [next-leaves-idx (inc leaves-idx)
+  ;;         next-leaf       (arrays/aget leaves next-leaves-idx)]
+  ;;     (when next-leaf
+  ;;       (Iter2. (.-keys next-leaf) next-leaves-idx leaves-len leaves 0 end-idx))))
+
+  ;; IReduce
+  ;; (-reduce [this f]
+  ;;   (if (nil? arr)
+  ;;     (f)
+  ;;     (let [first (-first this)
+  ;;           next  (-next this)]
+  ;;       (if (some? next)
+  ;;         (-reduce next f first)
+  ;;         first))))
+
+  ;; (-reduce [_ f start]
+  ;;   (loop [arr        arr
+  ;;          leaves-idx leaves-idx
+  ;;          idx        idx
+  ;;          acc        start]
+  ;;     (let [new-acc (f acc (arrays/aget arr idx))
+  ;;           inc-idx (inc idx)]
+  ;;       (if (reduced? new-acc)
+  ;;         @new-acc
+  ;;         (let [next-leaves-idx (inc leaves-idx)
+  ;;               next-leaf       (arrays/aget leaves next-leaves-idx)]
+  ;;           (if next-leaf
+  ;;             (if (< inc-idx (arrays/alength arr))
+  ;;               (recur arr leaves-idx inc-idx new-acc)
+  ;;               (recur (.-keys next-leaf) next-leaves-idx 0 new-acc))
+  ;;             (if (< inc-idx end-idx)
+  ;;               (recur arr leaves-idx inc-idx new-acc)
+  ;;               new-acc)))))))
+
+  ;; TODO:
+  ;; IReversible
+  ;; (-rseq [_]
+  ;;   (let [rev-leaves (-> '()
+  ;;                        (clojure.core/conj cur-leaf)
+  ;;                        (into leaves))
+  ;;         first-leaf (first rev-leaves)]
+  ;;     (ReverseIter. (.-keys first-leaf) first-leaf (next rev-leaves) (dec end-idx) (dec idx))))
+
+  ;; ISeek
+  ;; (-seek [this key]
+  ;;   (-seek this key (.-comparator set)))
+
+  ;; (-seek [this key cmp]
+  ;;   (throw (ex-info "seek not impl yet" {})))
+
+  Object
+  (toString [this] (pr-str* this))
+
+  IPrintWithWriter
+  #_:clj-kondo/ignore
+  (-pr-writer [this writer opts]
+    (pr-sequential-writer writer pr-writer "(" " " ")" opts (seq this))))
+
 ;; arr is the first leaf keys
 ;; arr should always exist
 (deftype Iter [^js arr cur-leaf leaves idx end-idx]
@@ -1297,51 +1399,63 @@
               leaves (get-leaves (.-_storage set) (.-_settings set) root path till-path level)]
        ;; level 0 the root is a leaf
        (if (== 0 level)
-         [leaves]
-         leaves))))
+         #js [leaves]
+         leaves
+         ))))
   ([storage settings node path till-path level]
    (if (== 0 level)
      ;; leaf
      node
      ;; inner node
-     (mp/let [children-len (arrays/alength (.-pointers ^Node node))
-              ;; fetch all the children in parallel
-              children
-              (loop [path           path
-                     child-promises (transient [])]
-                ;; if we are past the path, return up
-                (if (path-lt path till-path)
-                  (let [idx (path-get path level)
-                        p   (mp/let [child (node-child node idx storage settings)]
-                              (get-leaves storage settings child path till-path (dec level)))]
-                    ;; if we reached the end of this node, return up
-                    (if (< (inc idx) children-len)
-                      ;; have to zero out lower levels when inc this level
-                      ;; really only need to do this on first iteration
-                      (recur (path-set-zero-lower path level (inc idx))
-                             (conj! child-promises p))
-                      (mp/all (persistent! (conj! child-promises p)))))
-                  (mp/all (persistent! child-promises))))]
-       ;; if we are at level 1, all of the children are leaves
-       (if (== 1 level)
-         children
-         (into []
-               (mapcat identity)
-               children))))))
+     ;; we could avoid creating an array if it's inside this child but it didn't seem to speed up
+     (let [children-len   (arrays/alength (.-pointers ^Node node))
+           child-promises #js []]
+       ;; fetch all the children in parallel
+       (loop [path path]
+         ;; if we are past the path, return up
+         (when (path-lt path till-path)
+           (let [idx (path-get path level)
+                 p   (mp/let [child (node-child node idx storage settings)]
+                       (get-leaves storage settings child path till-path (dec level)))]
+             ;; if we reached the end of this node, return up
+             (when (< (inc idx) children-len)
+               ;; have to zero out lower levels when inc this level
+               ;; really only need to do this on first iteration
+               (.push child-promises p)
+               (recur (path-set-zero-lower path level (inc idx)))))))
+       (mp/let [children (mp/js-all child-promises)]
+         ;; if we are at level 1, all of the children are leaves
+         (if (== 1 level)
+           children
+           (.flat children)))))))
+
 
 (defn- -slice [set key-from key-to comparator]
   (mp/let [path (-seek* set key-from comparator)]
     (when (some? path)
       (mp/let [till-path (-rseek* set key-to comparator)]
         (when (path-lt path till-path)
-          (mp/let [leaves     (get-leaves set path till-path)
-                   first-leaf (first leaves)]
+          #_
+          (mp/let [leaves (get-leaves2 set path till-path)
+                   first-leaf (arrays/aget leaves 0)]
             (when first-leaf
               (let [end-idx (path-get till-path 0)
                     end-idx (if (== 0 end-idx)
-                              (arrays/alength (.-keys (last leaves)))
-                              end-idx)]
-                (Iter. (.-keys first-leaf) first-leaf (next leaves) (path-get path 0) end-idx)))))))))
+                              (arrays/alength (.-keys (arrays/alast leaves)))
+                              end-idx)
+                    keys    (.-keys first-leaf)]
+                (Iter2. keys (arrays/alength keys) 0 (arrays/alength leaves) leaves (path-get path 0) end-idx))))
+          ;; #_
+          (mp/let [js-leaves (get-leaves set path till-path)]
+            (let [leaves     (vec js-leaves)
+                  first-leaf (first leaves)]
+              (when first-leaf
+                (let [end-idx (path-get till-path 0)
+                      end-idx (if (== 0 end-idx)
+                                (arrays/alength (.-keys (last leaves)))
+                                end-idx)]
+                  (Iter. (.-keys first-leaf) first-leaf (next leaves) (path-get path 0) end-idx)))))
+          )))))
 
 (defn- arr-map-inplace [f arr]
   (let [len (arrays/alength arr)]

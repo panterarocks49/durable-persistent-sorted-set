@@ -41,6 +41,13 @@
     (p/all coll)
     coll))
 
+#?(:cljs
+   (defn js-all
+     [^js coll]
+     (if (.some coll p/promise?)
+       (js/Promise.all coll)
+       coll)))
+
 (defn then
   [p f]
   (if (p/promise? p)
@@ -64,85 +71,85 @@
             (rest body)))))
 
 (defmacro let
-  "If a value in the let binding is a promise, then await on the promise
+"If a value in the let binding is a promise, then await on the promise
   otherwise don't wait and don't return a promise
   In the best case, the code will run sync. Useful if you may or may not have a promise
   because it's faster to not await if you don't have too
   Body is run with `do!` and may contain promises as well"
-  {:style/indent 1}
-  [bindings & body]
-  (c/let [[n v & more] bindings
-          nsym         (gensym "n-")]
-    `(c/let [~nsym ~v]
-       (then
-        ~nsym
-        (fn [~n]
-          ~(if (seq more)
-             `(let ~more ~@body)
-             `(do! ~@body)))))))
+{:style/indent 1}
+[bindings & body]
+(c/let [[n v & more] bindings
+        nsym         (gensym "n-")]
+  `(c/let [~nsym ~v]
+     (then
+      ~nsym
+      (fn [~n]
+        ~(if (seq more)
+           `(let ~more ~@body)
+           `(do! ~@body)))))))
 
 (defrecord Recur [bindings])
 
 (defn recur?
-  [o]
-  (instance? Recur o))
+[o]
+(instance? Recur o))
 
 (defmacro recur
-  [& args]
-  `(->Recur [~@args]))
+[& args]
+`(->Recur [~@args]))
 
 (defmacro aloop*
-  [bindings body]
-  (c/let [binds (partition 2 2 bindings)
-          names (map first binds)
-          fvals (map second binds)
-          tsym  (gensym "loop-fn-")
-          res-s (gensym "res-")
-          err-s (gensym "err-")
-          rej-s (gensym "reject-fn-")
-          rsv-s (gensym "resolve-fn-")
-          inner `(p/finally
-                   (fn [~res-s ~err-s]
-                     (if (some? ~err-s)
-                       (~rej-s ~err-s)
-                       (if (recur? ~res-s)
-                         (do
-                           (exec/run!
-                            ;; vthread wasn't available in older promesa
-                            exec/default-executor
-                            ~(if (seq names)
-                               `(fn [] (apply ~tsym (:bindings ~res-s)))
-                               tsym))
-                           nil)
-                         (~rsv-s ~res-s)))))]
-    `(p/create
-      (fn [~rsv-s ~rej-s]
-        (c/let [~tsym (fn ~tsym [~@names]
-                        (if (some p/promise? [~@names])
-                          (-> (p/let [~@(mapcat (fn [nsym] [nsym nsym]) names)]
-                                ~body)
-                              ~inner)
-                          (c/let [~res-s (try-catchall
-                                          ~body
-                                          (catch ~err-s
-                                              (~rej-s ~err-s)))]
-                            (cond
-                              (p/promise? ~res-s)
-                              (-> ~res-s
-                                  ~inner)
-                              (recur? ~res-s)
-                              ;; recur is weird, I think it's defined in fns and loop
-                              ;; and not globally
-                              (recur ~@(map (fn [n]
-                                              `(nth (:bindings ~res-s) ~n))
-                                            (range 0 (count names))))
-                              :else
-                              (~rsv-s ~res-s)))))]
-          (exec/run!
-           exec/default-executor
-           ~(if (seq names)
-              `(fn [] (~tsym ~@fvals))
-              tsym)))))))
+[bindings body]
+(c/let [binds (partition 2 2 bindings)
+        names (map first binds)
+        fvals (map second binds)
+        tsym  (gensym "loop-fn-")
+        res-s (gensym "res-")
+        err-s (gensym "err-")
+        rej-s (gensym "reject-fn-")
+        rsv-s (gensym "resolve-fn-")
+        inner `(p/finally
+                 (fn [~res-s ~err-s]
+                   (if (some? ~err-s)
+                     (~rej-s ~err-s)
+                     (if (recur? ~res-s)
+                       (do
+                         (exec/run!
+                          ;; vthread wasn't available in older promesa
+                          exec/default-executor
+                          ~(if (seq names)
+                             `(fn [] (apply ~tsym (:bindings ~res-s)))
+                             tsym))
+                         nil)
+                       (~rsv-s ~res-s)))))]
+  `(p/create
+    (fn [~rsv-s ~rej-s]
+      (c/let [~tsym (fn ~tsym [~@names]
+                      (if (some p/promise? [~@names])
+                        (-> (p/let [~@(mapcat (fn [nsym] [nsym nsym]) names)]
+                              ~body)
+                            ~inner)
+                        (c/let [~res-s (try-catchall
+                                        ~body
+                                        (catch ~err-s
+                                            (~rej-s ~err-s)))]
+                          (cond
+                            (p/promise? ~res-s)
+                            (-> ~res-s
+                                ~inner)
+                            (recur? ~res-s)
+                            ;; recur is weird, I think it's defined in fns and loop
+                            ;; and not globally
+                            (recur ~@(map (fn [n]
+                                            `(nth (:bindings ~res-s) ~n))
+                                          (range 0 (count names))))
+                            :else
+                            (~rsv-s ~res-s)))))]
+        (exec/run!
+         exec/default-executor
+         ~(if (seq names)
+            `(fn [] (~tsym ~@fvals))
+            tsym)))))))
 
 (defmacro loop
   "Loop/recur with support for resolving promises. It will conditionally be async depending on
@@ -163,7 +170,7 @@
                        ~body)
                       ~res-s)))]
     `(c/loop ~bindings
-       (if (some p/promise? [~@names])
+       (if (or ~@(for [n names] `(p/promise? ~n)))
          (-> (p/let [~@(mapcat (fn [nsym] [nsym nsym]) names)]
                ~body)
              ~inner)
