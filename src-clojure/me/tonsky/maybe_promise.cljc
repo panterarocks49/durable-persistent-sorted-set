@@ -68,7 +68,7 @@
     `(-> ~(first body)
          ~@(c/mapv
             (fn [form]
-              `(then (fn [] ~form)))
+              `(then (fn [_#] ~form)))
             (rest body)))))
 
 (defmacro let
@@ -261,7 +261,7 @@
       (-> (pred (first coll))
           (then (fn [res?]
                   (if res?
-                    (->Recur [(rest coll)])
+                    (->Recur (arrays/array (rest coll)))
                     false))))
       true)))
 
