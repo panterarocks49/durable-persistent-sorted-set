@@ -1402,8 +1402,7 @@
        ;; level 0 the root is a leaf
        (if (== 0 level)
          #js [leaves]
-         leaves
-         ))))
+         leaves))))
   ([storage settings node path till-path level]
    (if (== 0 level)
      ;; leaf
@@ -1420,10 +1419,10 @@
                  p   (mp/let [child (node-child node idx storage settings)]
                        (get-leaves storage settings child path till-path (dec level)))]
              ;; if we reached the end of this node, return up
+             (.push child-promises p)
              (when (< (inc idx) children-len)
                ;; have to zero out lower levels when inc this level
                ;; really only need to do this on first iteration
-               (.push child-promises p)
                (recur (path-set-zero-lower path level (inc idx)))))))
        (mp/let [children (mp/js-all child-promises)]
          ;; if we are at level 1, all of the children are leaves
@@ -1431,23 +1430,11 @@
            children
            (.flat children)))))))
 
-
 (defn- -slice [set key-from key-to comparator]
   (mp/let [path (-seek* set key-from comparator)]
     (when (some? path)
       (mp/let [till-path (-rseek* set key-to comparator)]
         (when (path-lt path till-path)
-          #_
-          (mp/let [leaves (get-leaves2 set path till-path)
-                   first-leaf (arrays/aget leaves 0)]
-            (when first-leaf
-              (let [end-idx (path-get till-path 0)
-                    end-idx (if (== 0 end-idx)
-                              (arrays/alength (.-keys (arrays/alast leaves)))
-                              end-idx)
-                    keys    (.-keys first-leaf)]
-                (Iter2. keys (arrays/alength keys) 0 (arrays/alength leaves) leaves (path-get path 0) end-idx))))
-          ;; #_
           (mp/let [js-leaves (get-leaves set path till-path)]
             (let [leaves     (vec js-leaves)
                   first-leaf (first leaves)]
